@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#050403">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Hermes Live">
+  <title>Gemini Live</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" type="image/png" href="./icons/icon-192.png">
+  <link rel="apple-touch-icon" href="./icons/icon-192.png">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main id="app" data-session="boot" data-voice="listening" data-muted="false">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark"></span><span>Hermes Live</span></div>
+      <span id="connection-dot" class="connection-dot" aria-label="Connection status"></span>
+    </header>
+
+    <section class="stage" aria-live="polite">
+      <button id="orb" class="orb" type="button" aria-label="Start voice call">
+        <span class="orb-aura"></span>
+        <span class="orb-ring orb-ring-a"></span>
+        <span class="orb-ring orb-ring-b"></span>
+        <span class="orb-body"></span>
+        <span class="orb-core"></span>
+        <span id="task-embers" class="task-embers" aria-hidden="true"></span>
+      </button>
+
+      <div class="status-copy">
+        <h1 id="status-label">Preparing</h1>
+        <p id="status-detail">Checking the private voice relay…</p>
+        <span id="elapsed" class="elapsed">0:00</span>
+      </div>
+    </section>
+
+    <section id="approval-sheet" class="approval-sheet" aria-labelledby="approval-title" hidden>
+      <div class="sheet-handle"></div>
+      <div class="approval-kicker"><span></span><span id="approval-count">Approval needed</span></div>
+      <h2 id="approval-title">Hermes needs your approval</h2>
+      <p id="approval-question"></p>
+      <div class="approval-actions">
+        <button id="deny-approval" class="button button-secondary" type="button">Deny</button>
+        <button id="approve-approval" class="button button-primary" type="button">Approve once</button>
+      </div>
+    </section>
+
+    <section id="start-panel" class="start-panel">
+      <p>Gemini can hear the room while a call is active. Only your direct tap can approve an action.</p>
+      <button id="start-call" class="button button-primary button-large" type="button" disabled>Start voice</button>
+    </section>
+
+    <nav id="call-controls" class="call-controls" aria-label="Call controls" hidden>
+      <button id="mute-call" class="round-control" type="button" aria-pressed="false">
+        <span class="control-icon" aria-hidden="true">◉</span><span>Mute</span>
+      </button>
+      <button id="end-call" class="round-control end-control" type="button">
+        <span class="control-icon" aria-hidden="true">×</span><span>End</span>
+      </button>
+    </nav>
+
+    <button id="restore-audio" class="restore-audio" type="button" hidden>Tap to restore audio</button>
+    <div id="toast" class="toast" role="status" hidden></div>
+  </main>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

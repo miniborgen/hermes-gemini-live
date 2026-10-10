@@ -95,6 +95,35 @@ delegated runs, its own `API_SERVER_KEY` (see [Troubleshooting](#troubleshooting
 | **Real work, delegated** | Three verbs, not thirty schemas: `hermes_task` starts a job, `hermes_tasks` reads the call's board, `hermes_task_update(task, action)` denies, steers or stops one of them (approving a parked run is a user button press, never a model call). |
 | **Survives your own clicking** | The call lives outside the React component's lifecycle, so opening a session or switching panes mid-sentence does not end it. |
 
+## Private iOS PWA
+
+The plugin also ships a standalone, same-origin mobile surface under `mobile/`. It keeps both
+`GEMINI_API_KEY` and `API_SERVER_KEY` in the Python process and reuses the exact relay/task/approval
+contract used by Desktop. The browser receives audio, task state, and redacted approval questions;
+it never receives either credential.
+
+Run it on loopback with the Hermes runtime Python, then publish only that loopback port through
+Tailscale Serve:
+
+```bash
+cd ~/.hermes/plugins/hermes-gemini-live
+PYTHONPATH="$PWD" python -m hermes_gemini_live.mobile_server \
+  --allowed-login you@example.com --port 65183
+
+tailscale serve --bg --set-path=/live http://127.0.0.1:65183
+```
+
+Open `https://<your-tailnet-host>/live/` in iPhone Safari and choose **Add to Home Screen**. The
+server checks Tailscale's authenticated `Tailscale-User-Login` header against `--allowed-login` on
+every HTTP and WebSocket request. Direct loopback requests remain available for local testing.
+
+The PWA is deliberately foreground-first: iOS may suspend the microphone, Web Audio, or the socket
+when the app is backgrounded. Returning to the app shows **Tap to restore audio** when a user gesture
+is needed. A suspended or closed call does not resume its Gemini context or in-memory task board;
+already-submitted Hermes runs continue separately.
+
+---
+
 ## Configuration
 
 Every value is read from the environment of the profile serving the call. A variable that is
