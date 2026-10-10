@@ -1,4 +1,4 @@
-const CACHE = 'hermes-live-shell-v9'
+const CACHE = 'mini-live-shell-v12'
 const SHELL = ['./', './styles.css', './app.js', './state.mjs', './audio-worklet.js', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png']
 
 self.addEventListener('install', (event) => {

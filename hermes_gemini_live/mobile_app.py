@@ -65,7 +65,7 @@ def _asset_response(name: str) -> FileResponse:
 
 
 def create_app(*, allowed_login: str) -> FastAPI:
-    app = FastAPI(title="Hermes Gemini Live Mobile", docs_url=None, redoc_url=None)
+    app = FastAPI(title="Mini Live Mobile", docs_url=None, redoc_url=None)
 
     @app.middleware("http")
     async def require_tailnet_identity(request: Request, call_next):
@@ -96,8 +96,9 @@ def create_app(*, allowed_login: str) -> FastAPI:
         if not (_loopback(client_host) or _identity_allowed(ws.headers, allowed_login)):
             await ws.close(code=4403)
             return
-        voice_lane = lanes.resolve_lane(ws.query_params.get("lane"))
-        if voice_lane is None:
+        lane_id = str(ws.query_params.get("lane") or "").strip()
+        voice_lane = lanes.resolve_lane(lane_id) if lane_id else None
+        if lane_id and voice_lane is None:
             await ws.close(code=4404)
             return
         await ws.accept()

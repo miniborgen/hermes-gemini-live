@@ -38,7 +38,8 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert response.headers["cache-control"] == "no-store"
     assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
     assert response.headers["x-content-type-options"] == "nosniff"
-    assert "Gemini Live" in response.text
+    assert "Mini Live" in response.text
+    assert "Hermes Live" not in response.text
     assert 'id="orb"' in response.text
     assert 'id="start-call"' in response.text
     assert 'id="approval-sheet"' in response.text
@@ -46,6 +47,10 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert 'id="captions-call"' in response.text
     assert 'id="live-caption"' in response.text
     assert 'id="audio-mode"' in response.text
+    assert "Tap" in response.text
+    assert "Barge in" in response.text
+    assert "Stable speaker" not in response.text
+    assert "Natural barge-in" not in response.text
     assert 'id="sound-cues"' in response.text
     assert 'rel="manifest"' in response.text
 
@@ -59,6 +64,8 @@ def test_manifest_is_scoped_as_a_standalone_ios_pwa():
     assert manifest["start_url"] == "./"
     assert manifest["scope"] == "./"
     assert manifest["theme_color"] == "#050403"
+    assert manifest["name"] == "Mini Live"
+    assert manifest["short_name"] == "Mini Live"
     assert {icon["sizes"] for icon in manifest["icons"]} >= {"192x192", "512x512"}
     assert client().get("/favicon.ico", headers=HEADERS).headers["content-type"].startswith("image/png")
 
@@ -130,6 +137,26 @@ def test_relay_accepts_the_allowlisted_tailnet_user_and_runs_the_existing_relay(
         with http.websocket_connect("/relay?lane=garage-r129", headers=HEADERS) as ws:
             assert ws.receive_json() == {"type": "ready", "lane": "garage-r129"}
     assert seen["lane"].id == "garage-r129"
+
+
+def test_relay_without_a_lane_opens_a_regular_context_free_conversation(monkeypatch):
+    seen = {}
+
+    async def fake_relay(ws, session_key=None, profile=None, voice_lane=None):
+        seen["lane"] = voice_lane
+        await ws.send_json({"type": "ready"})
+
+    monkeypatch.setattr(mobile_app.relay, "run_relay", fake_relay)
+    monkeypatch.setattr(
+        mobile_app.lanes,
+        "resolve_lane",
+        lambda lane_id: (_ for _ in ()).throw(AssertionError("missing lane must not be resolved")),
+    )
+
+    with client() as http:
+        with http.websocket_connect("/relay", headers=HEADERS) as ws:
+            assert ws.receive_json() == {"type": "ready"}
+    assert seen["lane"] is None
 
 
 def test_relay_rejects_an_unknown_lane_before_opening_gemini(monkeypatch):

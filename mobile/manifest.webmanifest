@@ -1,7 +1,7 @@
 {
-  "name": "Hermes Gemini Live",
-  "short_name": "Hermes Live",
-  "description": "Private full-duplex voice with Hermes task delegation.",
+  "name": "Mini Live",
+  "short_name": "Mini Live",
+  "description": "Private full-duplex voice with Mini task delegation.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

@@ -1,4 +1,4 @@
-import { feedbackCue, hasScheduledPlayback, initialState, isCurrentConnection, laneVisualToken, reconnectDelay, reduceFrame, shouldTransmitMic, visibleStatus } from './state.mjs'
+import { feedbackCue, hasScheduledPlayback, initialState, isCurrentConnection, laneVisualToken, reconnectDelay, reduceFrame, shouldConnectAfterLaneSwitch, shouldTransmitMic, visibleStatus } from './state.mjs'
 
 const SEND_RATE = 16000
 const SPEECH_ON = 0.055
@@ -8,7 +8,6 @@ const elements = {
   app: document.querySelector('#app'),
   statusLabel: document.querySelector('#status-label'),
   statusDetail: document.querySelector('#status-detail'),
-  activeLane: document.querySelector('#active-lane'),
   elapsed: document.querySelector('#elapsed'),
   startButton: document.querySelector('#start-call'),
   startPanel: document.querySelector('#start-panel'),
@@ -70,7 +69,7 @@ function render () {
   elements.app.style.setProperty('--lane-motion', String(laneToken.motion))
   elements.statusLabel.textContent = status.label
   elements.statusDetail.textContent = status.detail || state.detail || ''
-  elements.startButton.disabled = state.session !== 'idle' || !state.selectedLane
+  elements.startButton.disabled = !['idle', 'error', 'ended'].includes(state.session)
   elements.startButton.textContent = state.session === 'error' || state.session === 'ended' ? 'Start again' : 'Start voice'
   elements.startPanel.hidden = !['idle', 'error', 'ended'].includes(state.session)
   elements.controls.hidden = !['starting', 'live', 'reconnecting'].includes(state.session)
@@ -80,15 +79,13 @@ function render () {
   elements.captions.setAttribute('aria-pressed', String(state.captionsEnabled))
   elements.captions.querySelector('span:last-child').textContent = state.captionsEnabled ? 'Captions on' : 'Captions'
   elements.orb.setAttribute('aria-label', state.session === 'idle' ? 'Start voice call' : status.label)
-  elements.laneSelect.disabled = !['idle', 'error', 'ended'].includes(state.session)
+  elements.laneSelect.disabled = state.session === 'boot'
   for (const input of elements.audioModes) {
     input.checked = input.value === state.duplexMode
     input.disabled = !['idle', 'error', 'ended'].includes(state.session)
   }
   elements.soundCues.checked = state.soundCues
   elements.soundCues.disabled = !['idle', 'error', 'ended'].includes(state.session)
-  elements.activeLane.hidden = !state.laneName
-  elements.activeLane.textContent = state.laneName
   const captions = state.captionsEnabled ? state.captions : []
   elements.liveCaption.hidden = !captions.length
   elements.liveCaption.replaceChildren(...captions.map((caption, index) => {
@@ -304,7 +301,7 @@ function unlockAudio (context) {
 function socketUrl () {
   const url = new URL('./relay', window.location.href)
   url.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  url.searchParams.set('lane', state.selectedLane)
+  if (state.selectedLane) url.searchParams.set('lane', state.selectedLane)
   return url.toString()
 }
 
@@ -315,7 +312,7 @@ function receiveFrame (event) {
   if (frame.type === 'ready') {
     const resumedFresh = state.session === 'reconnecting'
     emitFeedback('connected')
-    if (resumedFresh) showToast('Reconnected — fresh voice session, same lane')
+    if (resumedFresh) showToast('Reconnected — fresh voice session, same conversation mode')
   }
 
   if (frame.type === 'audio' && frame.data) {
@@ -393,7 +390,7 @@ function scheduleReconnect () {
 }
 
 async function startCall () {
-  if (!['idle', 'error', 'ended'].includes(state.session) || !state.selectedLane) return
+  if (!['idle', 'error', 'ended'].includes(state.session)) return
   await stopCall(false)
   state = {
     ...initialState(),
@@ -428,6 +425,38 @@ async function startCall () {
     releaseResources(true)
     render()
   }
+}
+
+function closeRelayConnection () {
+  window.clearTimeout(reconnectTimer)
+  reconnectTimer = 0
+  intentionalClose = true
+  const connection = socket
+  socket = null
+  if (!connection) return
+  try {
+    if (connection.readyState === WebSocket.OPEN) connection.send(JSON.stringify({ type: 'close' }))
+    connection.close()
+  } catch {}
+}
+
+function switchLane (id, name) {
+  if (id === state.selectedLane) return
+  const activeCall = ['starting', 'live', 'reconnecting'].includes(state.session)
+  if (!activeCall) {
+    dispatch({ type: 'lane_selected', id, name })
+    return
+  }
+  const connectNow = shouldConnectAfterLaneSwitch({
+    hasSocket: Boolean(socket),
+    captureReady: Boolean(captureNode && mediaStream)
+  })
+  closeRelayConnection()
+  player?.flush()
+  interruptUntil = 0
+  dispatch({ type: 'lane_switching', id, name })
+  showToast(`Switching to ${name} — starting a fresh voice session`)
+  if (connectNow) connectSocket()
 }
 
 function releaseResources (closeSocket = true) {
@@ -514,10 +543,12 @@ async function boot () {
     ])
     const [statusPayload, lanesPayload] = await Promise.all([statusResponse.json(), lanesResponse.json()])
     if (!statusResponse.ok || !statusPayload.ok) throw new Error(statusPayload.detail || 'Private relay unavailable')
-    if (!lanesResponse.ok || !Array.isArray(lanesPayload.lanes) || !lanesPayload.lanes.length) {
-      throw new Error('No Telegram topic lanes are configured')
+    if (!lanesResponse.ok || !Array.isArray(lanesPayload.lanes)) {
+      throw new Error('Swim lanes are unavailable')
     }
-    elements.laneSelect.replaceChildren(...lanesPayload.lanes.map((lane) => {
+    const general = { id: '', name: 'General conversation' }
+    const availableLanes = [general, ...lanesPayload.lanes]
+    elements.laneSelect.replaceChildren(...availableLanes.map((lane) => {
       const option = document.createElement('option')
       option.value = lane.id
       option.textContent = lane.name
@@ -527,7 +558,7 @@ async function boot () {
     const captionsEnabled = localStorage.getItem('hermes-live-captions') === 'on'
     const duplexMode = localStorage.getItem('hermes-live-duplex') === 'natural' ? 'natural' : 'stable'
     const soundCues = localStorage.getItem('hermes-live-sound-cues') === 'on'
-    const selected = lanesPayload.lanes.find((lane) => lane.id === remembered) || lanesPayload.lanes[0]
+    const selected = availableLanes.find((lane) => lane.id === remembered) || general
     elements.laneSelect.value = selected.id
     state = {
       ...initialState(),
@@ -549,8 +580,9 @@ elements.startButton.addEventListener('click', startCall)
 elements.laneSelect.addEventListener('change', () => {
   const option = elements.laneSelect.selectedOptions[0]
   if (!option) return
-  localStorage.setItem('hermes-live-lane', option.value)
-  dispatch({ type: 'lane_selected', id: option.value, name: option.textContent })
+  if (option.value) localStorage.setItem('hermes-live-lane', option.value)
+  else localStorage.removeItem('hermes-live-lane')
+  switchLane(option.value, option.textContent)
 })
 elements.orb.addEventListener('click', () => {
   if (['idle', 'error', 'ended'].includes(state.session)) void startCall()

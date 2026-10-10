@@ -67,6 +67,10 @@ export function isCurrentConnection (activeSocket, callbackSocket) {
   return Boolean(activeSocket) && activeSocket === callbackSocket
 }
 
+export function shouldConnectAfterLaneSwitch ({ hasSocket, captureReady }) {
+  return Boolean(hasSocket || captureReady)
+}
+
 function captionsFrom (state, speaker, frame) {
   if (!state.captionsEnabled) return state.captions
   const incoming = String(frame.text || '').trim()
@@ -130,6 +134,21 @@ export function reduceFrame (state, frame) {
       return { ...state, captions: [] }
     case 'lane_selected':
       return { ...state, selectedLane: String(frame.id || ''), laneName: String(frame.name || '') }
+    case 'lane_switching':
+      return {
+        ...state,
+        session: 'starting',
+        voice: 'listening',
+        level: 0,
+        detail: '',
+        reconnectAttempt: 0,
+        selectedLane: String(frame.id || ''),
+        laneName: String(frame.name || 'General conversation'),
+        activeLane: null,
+        pending: [],
+        approvals: [],
+        captions: []
+      }
     case 'lane_context':
       return {
         ...state,
@@ -143,7 +162,7 @@ export function reduceFrame (state, frame) {
       const id = String(frame.id || '')
       if (!id) return state
       const current = state.approvals.find((item) => item.id === id)
-      const approval = { id, question: String(frame.question || 'Hermes needs your approval.'), sending: false }
+      const approval = { id, question: String(frame.question || 'Mini needs your approval.'), sending: false }
       return {
         ...state,
         pending: uniqueAdd(state.pending, id),
@@ -195,7 +214,7 @@ export function visibleStatus (state) {
   if (state.session === 'reconnecting') return { label: 'Reconnecting', detail: `Attempt ${state.reconnectAttempt} of 3 — opening a fresh voice session in this lane` }
   if (state.session === 'error') return { label: 'Unavailable', detail: state.detail }
   if (state.session === 'ended') return { label: 'Call ended', detail: state.detail }
-  if (state.pending.length) return { label: 'Hermes is working', detail: `${state.pending.length} task${state.pending.length === 1 ? '' : 's'} in progress` }
+  if (state.pending.length) return { label: 'Mini is working', detail: `${state.pending.length} task${state.pending.length === 1 ? '' : 's'} in progress` }
   if (state.voice === 'thinking') return { label: 'Thinking', detail: '' }
   if (state.voice === 'assistant') return {
     label: 'Speaking',
@@ -203,6 +222,6 @@ export function visibleStatus (state) {
   }
   if (state.muted) return { label: 'Muted', detail: 'The call and delegated tasks remain active' }
   if (state.voice === 'user') return { label: 'Listening', detail: 'You are speaking' }
-  if (state.session === 'idle') return { label: 'Ready', detail: state.selectedLane ? 'Start when you are ready' : 'Choose a swim lane' }
+  if (state.session === 'idle') return { label: 'Ready', detail: state.selectedLane ? 'Start when you are ready' : 'Start a general conversation' }
   return { label: 'Listening', detail: state.laneName || '' }
 }

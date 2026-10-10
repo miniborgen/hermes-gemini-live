@@ -6,8 +6,8 @@
   <meta name="theme-color" content="#050403">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Hermes Live">
-  <title>Gemini Live</title>
+  <meta name="apple-mobile-web-app-title" content="Mini Live">
+  <title>Mini Live</title>
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" type="image/png" href="./icons/icon-192.png">
   <link rel="apple-touch-icon" href="./icons/icon-192.png">
@@ -16,8 +16,8 @@
 <body>
   <main id="app" data-session="boot" data-voice="listening" data-muted="false">
     <header class="topbar">
-      <div class="brand"><span class="brand-mark"></span><span>Hermes Live</span></div>
-      <div class="topbar-status"><span id="active-lane" class="active-lane" hidden></span><span id="connection-dot" class="connection-dot" aria-label="Connection status"></span></div>
+      <div class="brand"><span class="brand-mark"></span><span>Mini Live</span></div>
+      <div class="topbar-status"><span id="connection-dot" class="connection-dot" aria-label="Connection status"></span></div>
     </header>
 
     <section class="stage" aria-live="polite">
@@ -41,7 +41,7 @@
     <section id="approval-sheet" class="approval-sheet" aria-labelledby="approval-title" hidden>
       <div class="sheet-handle"></div>
       <div class="approval-kicker"><span></span><span id="approval-count">Approval needed</span></div>
-      <h2 id="approval-title">Hermes needs your approval</h2>
+      <h2 id="approval-title">Mini needs your approval</h2>
       <p id="approval-question"></p>
       <div class="approval-actions">
         <button id="deny-approval" class="button button-secondary" type="button">Deny</button>
@@ -49,43 +49,49 @@
       </div>
     </section>
 
-    <section id="start-panel" class="start-panel">
-      <label class="lane-picker" for="lane-select">
+    <div class="bottom-stack">
+      <section id="start-panel" class="start-panel">
+        <div class="interrupt-setting">
+          <span>Interrupt</span>
+          <fieldset class="audio-mode-picker" aria-label="Interrupt style">
+            <legend>Interrupt style</legend>
+            <label>
+              <input id="audio-mode" type="radio" name="audio-mode" value="stable" checked>
+              <span>Tap</span>
+            </label>
+            <label>
+              <input type="radio" name="audio-mode" value="natural">
+              <span>Barge in</span>
+            </label>
+          </fieldset>
+        </div>
+        <label class="preference-switch" for="sound-cues">
+          <span><strong>Quiet sound cues</strong><small>Connection, approval, and failure only.</small></span>
+          <input id="sound-cues" type="checkbox">
+        </label>
+        <button id="start-call" class="button button-primary button-large" type="button" disabled>Start voice</button>
+      </section>
+
+      <nav id="call-controls" class="call-controls" aria-label="Call controls" hidden>
+        <button id="mute-call" class="round-control" type="button" aria-pressed="false">
+          <span class="control-icon" aria-hidden="true">◉</span><span>Mute</span>
+        </button>
+        <button id="captions-call" class="round-control" type="button" aria-pressed="false">
+          <span class="control-icon caption-icon" aria-hidden="true">CC</span><span>Captions</span>
+        </button>
+        <button id="end-call" class="round-control end-control" type="button">
+          <span class="control-icon" aria-hidden="true">×</span><span>End</span>
+        </button>
+      </nav>
+
+      <label class="lane-picker bottom-lane-picker" for="lane-select">
         <span>Swim lane</span>
         <select id="lane-select" aria-describedby="lane-help" disabled>
-          <option value="">Loading your topics…</option>
+          <option value="">General conversation</option>
         </select>
       </label>
-      <p id="lane-help">Gemini starts with this topic’s skill and GBrain context. A new lane starts a new call.</p>
-      <fieldset class="audio-mode-picker">
-        <legend>Conversation audio</legend>
-        <label>
-          <input id="audio-mode" type="radio" name="audio-mode" value="stable" checked>
-          <span><strong>Stable speaker</strong><small>Tap the orb when you want to interrupt.</small></span>
-        </label>
-        <label>
-          <input type="radio" name="audio-mode" value="natural">
-          <span><strong>Natural barge-in</strong><small>Best with headphones or quiet rooms.</small></span>
-        </label>
-      </fieldset>
-      <label class="preference-switch" for="sound-cues">
-        <span><strong>Quiet sound cues</strong><small>Connection, approval, and failure only.</small></span>
-        <input id="sound-cues" type="checkbox">
-      </label>
-      <button id="start-call" class="button button-primary button-large" type="button" disabled>Start voice</button>
-    </section>
-
-    <nav id="call-controls" class="call-controls" aria-label="Call controls" hidden>
-      <button id="mute-call" class="round-control" type="button" aria-pressed="false">
-        <span class="control-icon" aria-hidden="true">◉</span><span>Mute</span>
-      </button>
-      <button id="captions-call" class="round-control" type="button" aria-pressed="false">
-        <span class="control-icon caption-icon" aria-hidden="true">CC</span><span>Captions</span>
-      </button>
-      <button id="end-call" class="round-control end-control" type="button">
-        <span class="control-icon" aria-hidden="true">×</span><span>End</span>
-      </button>
-    </nav>
+      <p id="lane-help" class="lane-help">No lane uses a regular conversation. Switching lanes during a call starts a fresh voice session.</p>
+    </div>
 
     <button id="restore-audio" class="restore-audio" type="button" hidden>Tap to restore audio</button>
     <div id="toast" class="toast" role="status" hidden></div>

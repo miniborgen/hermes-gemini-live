@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { feedbackCue, hasScheduledPlayback, initialState, isCurrentConnection, laneVisualToken, reconnectDelay, reduceFrame, shouldTransmitMic, visibleStatus } from '../mobile/state.mjs'
+import { feedbackCue, hasScheduledPlayback, initialState, isCurrentConnection, laneVisualToken, reconnectDelay, reduceFrame, shouldConnectAfterLaneSwitch, shouldTransmitMic, visibleStatus } from '../mobile/state.mjs'
 
 test('task frames maintain a per-task approval queue and exact ids', () => {
   let state = initialState()
@@ -38,7 +38,7 @@ test('voice frames distinguish user, thinking, and assistant motion states', () 
 
 test('visible status prioritizes work and mute without hiding approvals', () => {
   let state = { ...initialState(), session: 'live', voice: 'assistant', muted: true, pending: ['a'] }
-  assert.equal(visibleStatus(state).label, 'Hermes is working')
+  assert.equal(visibleStatus(state).label, 'Mini is working')
 
   state = { ...state, approvals: [{ id: 'a', question: 'Allow?', sending: false }] }
   assert.equal(visibleStatus(state).label, 'Approval needed')
@@ -54,6 +54,36 @@ test('lane selection is retained in idle state and reported when the relay opens
   assert.equal(state.activeLane, 'garage-r129')
   assert.equal(state.laneName, 'Garage — R129')
   assert.equal(visibleStatus(state).detail, 'Start when you are ready')
+})
+
+test('general conversation needs no lane and switching lanes clears old-session state', () => {
+  const general = { ...initialState(), session: 'idle', selectedLane: '', laneName: 'General conversation' }
+  assert.equal(visibleStatus(general).detail, 'Start a general conversation')
+
+  const switched = reduceFrame({
+    ...general,
+    session: 'live',
+    selectedLane: 'garage-r129',
+    laneName: 'Garage — R129',
+    activeLane: 'garage-r129',
+    pending: ['old-task'],
+    approvals: [{ id: 'old-task' }],
+    captions: [{ speaker: 'assistant', text: 'old words' }]
+  }, { type: 'lane_switching', id: '', name: 'General conversation' })
+
+  assert.equal(switched.session, 'starting')
+  assert.equal(switched.selectedLane, '')
+  assert.equal(switched.laneName, 'General conversation')
+  assert.equal(switched.activeLane, null)
+  assert.deepEqual(switched.pending, [])
+  assert.deepEqual(switched.approvals, [])
+  assert.deepEqual(switched.captions, [])
+})
+
+test('lane switching during microphone startup does not create a duplicate relay', () => {
+  assert.equal(shouldConnectAfterLaneSwitch({ hasSocket: false, captureReady: false }), false)
+  assert.equal(shouldConnectAfterLaneSwitch({ hasSocket: true, captureReady: false }), true)
+  assert.equal(shouldConnectAfterLaneSwitch({ hasSocket: false, captureReady: true }), true)
 })
 
 test('lane visuals are stable and remain inside the restrained warm palette', () => {
