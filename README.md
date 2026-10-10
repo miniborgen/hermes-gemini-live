@@ -122,6 +122,41 @@ when the app is backgrounded. Returning to the app shows **Tap to restore audio*
 is needed. A suspended or closed call does not resume its Gemini context or in-memory task board;
 already-submitted Hermes runs continue separately.
 
+The PWA offers two explicit audio modes instead of guessing across incomparable microphone and
+speaker level scales. **Stable speaker** suppresses microphone uplink while Gemini is speaking; tap
+the orb to interrupt intentionally. **Natural barge-in** remains fully duplex and works best with
+headphones or quiet rooms. The selected mode is remembered locally.
+
+The in-call **Captions** toggle renders Gemini Live's input and output transcription as two fading,
+speaker-labelled lines. Captions stay in page memory only, disappear after a few seconds, and are
+never stored by the service worker; the on/off preference is remembered locally. Unexpected socket
+closures retry three times with a bounded delay. Each successful retry opens a fresh Gemini voice
+session in the same selected lane; browser task/approval indicators from the dead relay are cleared,
+while already-submitted Hermes work continues separately. Optional quiet sound cues and restrained
+haptics cover connection, approval, failure, and ending.
+
+### Topic swim lanes
+
+Before opening the microphone, the PWA lists the skill-bound Telegram topics from
+`telegram.extra.group_topics` (for example **Garage**, **Garage — R129**, or **Personal Context**).
+The chosen topic is resolved only on the server:
+
+1. its bound Hermes skill becomes a bounded, safety-aware voice brief; long skills retain marked
+   privacy, approval, operating, recovery, pitfall, and verification sections rather than being
+   silently cut at a character boundary;
+2. canonical `~/brain/...md` pages named by that skill are reduced to identity, current-state,
+   decision, and open-loop sections and added to Gemini's setup instruction;
+3. delegated Hermes work receives the lane identity, an instruction to load and follow the complete
+   bound skill, only the GBrain pages explicitly labeled canonical by that skill, and a stable
+   `gemini-live:chat:<chat_id>:topic:<thread_id>` session scope.
+
+This lets Gemini answer ordinary lane-context questions directly instead of delegating every
+recall turn. Current facts, file access, research, actions, and deeper retrieval still go through
+Hermes. The assembled context never reaches the selector endpoint or browser storage; the browser
+receives and stores only lane ids and display names. Related/non-canonical pages are not loaded
+implicitly. Unknown, unbound, or unreadable lanes are rejected before a Gemini session opens.
+Starting another lane starts a fresh Gemini Live session.
+
 ---
 
 ## Configuration

@@ -23,6 +23,8 @@ def test_setup_carries_the_google_owned_trim():
     assert setup["setup"]["contextWindowCompression"] == {"slidingWindow": {}}
     assert setup["setup"]["sessionResumption"] == {}
     assert setup["setup"]["model"] == "models/gemini-3.8-live"
+    assert setup["setup"]["inputAudioTranscription"] == {}
+    assert setup["setup"]["outputAudioTranscription"] == {}
 
 
 def test_activity_lands_under_realtime_input_config_only_when_supplied():
@@ -81,6 +83,17 @@ def test_interruption_is_a_flush_signal_not_an_upstream_command():
 
 def test_turn_complete_closes_the_loop():
     assert types(wire.browser_frames({"serverContent": {"turnComplete": True}})) == ["turn_complete"]
+
+
+def test_input_and_output_transcriptions_reach_ephemeral_captions():
+    frames = wire.browser_frames({"serverContent": {
+        "inputTranscription": {"text": "check the garage"},
+        "outputTranscription": {"text": "I found three tasks"},
+    }})
+    assert frames == [
+        {"type": "in_text", "text": "check the garage"},
+        {"type": "out_text", "text": "I found three tasks"},
+    ]
 
 
 def test_tool_call_survives_with_parsed_args():

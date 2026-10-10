@@ -94,8 +94,9 @@ def opened(monkeypatch):
 
         class Stub:
             @staticmethod
-            async def open(tools=None):
+            async def open(tools=None, instructions=None):
                 seen["tools"] = tools
+                seen["instructions"] = instructions
                 return live
 
         monkeypatch.setattr(relay, "LiveSession", Stub)
@@ -116,6 +117,7 @@ async def test_mic_and_type_frames_reach_the_live_socket(opened):
     await relay.run_relay(browser)
     assert live.audio_in == ["AAA="]
     assert live.text_in == ["hello"]
+    assert browser.sent[0] == {"type": "ready"}
     assert live.closed is True
 
 
@@ -123,8 +125,8 @@ async def test_mic_and_type_frames_reach_the_live_socket(opened):
 async def test_live_events_are_relabelled_for_the_renderer(opened, monkeypatch):
     # This test is about labelling, so the run itself must not reach the network.
     monkeypatch.setattr(relay.agent_lane, "start_task", lambda *a, **k: "task-x")
-    live = opened(FakeLive(incoming=[{"setupComplete": {}},
-                                     {"serverContent": {"interrupted": True}},
+    # LiveSession.open() consumes setupComplete before returning this peer to the relay.
+    live = opened(FakeLive(incoming=[{"serverContent": {"interrupted": True}},
                                      {"serverContent": {"turnComplete": True}},
                                      {"toolCall": {"functionCalls": [
                                          {"id": "c1", "name": "giao_viec_cho_hermes",
@@ -143,9 +145,8 @@ async def test_junk_and_blank_frames_never_reach_the_renderer(opened):
                               {"serverContent": {"modelTurn": {"parts": [{"text": "   "}]}}}]))
     browser = FakeBrowser([])
     await relay.run_relay(browser)
-    # The only frame the renderer sees is the socket dying after the script; nothing the
-    # server invented on its own gets forwarded as a message it cannot handle.
-    assert types(browser) == ["error"]
+    # Readiness is explicit; junk stays dropped before the scripted socket error.
+    assert types(browser) == ["ready", "error"]
 
 
 @pytest.mark.asyncio
@@ -165,7 +166,7 @@ async def test_a_refused_open_reports_why_and_leaves_no_session(monkeypatch):
 
     class Refusing:
         @staticmethod
-        async def open(tools=None):
+        async def open(tools=None, instructions=None):
             raise ConfigError("no Gemini key for Live: set GEMINI_LIVE_API_KEY or GEMINI_API_KEY")
 
     monkeypatch.setattr(relay, "LiveSession", Refusing)
@@ -182,7 +183,7 @@ async def test_a_server_goodbye_ends_the_call_as_its_own_reason(opened):
     live = opened(FakeLive(incoming=[{"goAway": {"timeLeft": "30s"}}]))
     browser = FakeBrowser([])
     await relay.run_relay(browser)
-    assert types(browser) == ["go_away"]
+    assert types(browser) == ["ready", "go_away"]
     assert live.closed is True
 
 
@@ -215,6 +216,39 @@ async def test_a_tool_call_answers_with_a_receipt_and_starts_no_wait(opened, mon
     assert task_id == "call_7"
     assert callable(on_needs_input)
     assert live.responses and live.responses[0]["result"].startswith("WORK_STARTED call_7")
+
+
+@pytest.mark.asyncio
+async def test_selected_voice_lane_prewarms_gemini_and_shapes_delegated_work(opened, monkeypatch):
+    started = []
+
+    class Lane:
+        id = "garage-r129"
+        name = "Garage — R129"
+        instructions = "Selected swim lane: Garage — R129. Known car: 1994 SL500."
+        task_context = "Voice lane Garage — R129; skill garage-r129-lane; canonical page r129.md."
+
+        @staticmethod
+        def session_key(base):
+            return "gemini-live:topic:68"
+
+    def fake_start_task(prompt, **kwargs):
+        started.append((prompt, kwargs["session_key"]))
+        return "task-1"
+
+    monkeypatch.setattr(relay.agent_lane, "start_task", fake_start_task)
+    live = opened(FakeLive(incoming=[
+        {"toolCall": {"functionCalls": [{"id": "lane-task", "name": "hermes_task",
+                                         "args": {"task": "What should I work on next?"}}]}}
+    ]))
+    browser = FakeBrowser([])
+
+    await relay.run_relay(browser, voice_lane=Lane())
+
+    assert opened.seen["instructions"] == Lane.instructions
+    assert started[0][1] == "gemini-live:topic:68"
+    assert started[0][0].startswith("Voice lane Garage — R129")
+    assert "What should I work on next?" in started[0][0]
 
 
 @pytest.mark.asyncio

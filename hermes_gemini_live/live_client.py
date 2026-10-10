@@ -59,14 +59,17 @@ class LiveSession:
         self.closed_reason = ""
 
     @classmethod
-    async def open(cls, tools: list[dict] | None = None) -> "LiveSession":
+    async def open(cls, tools: list[dict] | None = None,
+                   instructions: str | None = None) -> "LiveSession":
         try:
             key = config.resolve_key()
             model = config.model()
             plan = {
                 "model": model,
                 "voice": config.voice(),
-                "instructions": config.instructions(),
+                "instructions": "\n\n".join(
+                    value for value in (config.instructions(), (instructions or "").strip()) if value
+                ),
                 "thinking_level": config.thinking_level(model),
                 "activity": config.activity_detection(),
                 "tools": tools,

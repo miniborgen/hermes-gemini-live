@@ -1,4 +1,4 @@
-const CACHE = 'hermes-live-shell-v2'
+const CACHE = 'hermes-live-shell-v9'
 const SHELL = ['./', './styles.css', './app.js', './state.mjs', './audio-worklet.js', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png']
 
 self.addEventListener('install', (event) => {
@@ -13,7 +13,7 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const request = event.request
-  if (request.method !== 'GET' || request.url.includes('/relay') || request.url.includes('/api/') || request.url.includes('/health')) {
+  if (request.method !== 'GET' || request.url.includes('/relay') || request.url.includes('/api/') || request.url.includes('/health') || request.url.includes('/status') || request.url.includes('/lanes')) {
     event.respondWith(fetch(request, { cache: 'no-store' }))
     return
   }

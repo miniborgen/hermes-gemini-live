@@ -109,7 +109,8 @@ async def _browser_to_live(browser: Any, live: LiveSession, note: dict,
 
 async def _handle_tool_call(call: dict, live: LiveSession, browser: Any,
                             book: agent_lane.RunBook, session_key: str | None,
-                            profile: str | None, notes: NoteQueue) -> None:
+                            profile: str | None, notes: NoteQueue,
+                            task_context: str = "") -> None:
     """Receipt first, work in the pool. The only await here is a small local socket send.
 
     The rule is about not waiting on a *run* (seconds to minutes), not about never
@@ -133,6 +134,8 @@ async def _handle_tool_call(call: dict, live: LiveSession, browser: Any,
         await live.send_function_response(call_id, "No task text was supplied.", name)
         return
 
+    if task_context:
+        task = f"{task_context}\n\nUser request from the voice call:\n{task}"
     loop = asyncio.get_running_loop()
     await live.send_function_response(
         call_id,
@@ -284,7 +287,8 @@ async def _release(notes: NoteQueue, task_id: str, why: str) -> None:
 
 async def _live_to_browser(browser: Any, live: LiveSession, note: dict,
                            book: agent_lane.RunBook, session_key: str | None,
-                           profile: str | None, notes: NoteQueue) -> None:
+                           profile: str | None, notes: NoteQueue,
+                           task_context: str = "") -> None:
     while True:
         try:
             # The timeout is not a liveness check, it is the other half of the queue: a
@@ -307,7 +311,7 @@ async def _live_to_browser(browser: Any, live: LiveSession, note: dict,
             if frame["type"] == "tool_call":
                 for call in frame["calls"]:
                     await _handle_tool_call(call, live, browser, book, session_key,
-                                            profile, notes)
+                                            profile, notes, task_context)
         await notes.release_quietly()
 
 
@@ -345,13 +349,19 @@ def _dump(frame: dict) -> str:
 
 
 async def run_relay(browser: Any, session_key: str | None = None,
-                     profile: str | None = None) -> None:
+                     profile: str | None = None, voice_lane: Any = None) -> None:
     """Own the whole call. The caller has already accepted the upgrade."""
     note: dict = {"reason": ""}
     # The serving home decides the profile, not a query parameter a client could send:
     # an unprefixed run resumes in the DEFAULT profile's store, so this is the one place
     # that must be right for delegated work to land in the right memory.
     profile = profile or config.serving_profile()
+    task_context = ""
+    lane_instructions = None
+    if voice_lane is not None:
+        session_key = voice_lane.session_key(session_key)
+        lane_instructions = voice_lane.instructions
+        task_context = voice_lane.task_context
     # Off the audio loop: a probe is a network round trip, and a slow gateway must not
     # cost the user a dropped syllable.
     lane_status, lane_detail = await asyncio.to_thread(agent_lane.probe, session_key, profile)
@@ -360,20 +370,29 @@ async def run_relay(browser: Any, session_key: str | None = None,
         logger.warning("hermes-gemini-live: agent lane unavailable (%s: %s)",
                        lane_status, lane_detail)
     try:
-        live = await LiveSession.open(tools_module.declarations() if offer_tools else None)
+        live = await LiveSession.open(
+            tools_module.declarations() if offer_tools else None,
+            instructions=lane_instructions,
+        )
     except (LiveError, ConfigError) as exc:
         logger.warning("hermes-gemini-live: call refused: %s", exc)
         await browser.send_text(_dump({"type": "error", "detail": str(exc)}))
         return
+    # LiveSession.open() consumes Gemini's setupComplete acknowledgement. The browser
+    # needs an explicit readiness frame only after that handshake has really succeeded.
+    await browser.send_text(_dump({"type": "ready"}))
     if not offer_tools:
         await browser.send_text(_dump({"type": "lane", "status": lane_status,
                                        "detail": lane_detail}))
+    if voice_lane is not None:
+        await browser.send_text(_dump({"type": "lane_context", "id": voice_lane.id,
+                                       "name": voice_lane.name}))
 
     book = agent_lane.RunBook()
     notes = NoteQueue(live)
     up = asyncio.create_task(_browser_to_live(browser, live, note, book, session_key, profile))
     down = asyncio.create_task(_live_to_browser(browser, live, note, book, session_key,
-                                                profile, notes))
+                                                profile, notes, task_context))
     try:
         done, pending = await asyncio.wait({up, down}, return_when=asyncio.FIRST_COMPLETED)
         for task in done:

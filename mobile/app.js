@@ -1,4 +1,4 @@
-import { initialState, reduceFrame, visibleStatus } from './state.mjs'
+import { feedbackCue, hasScheduledPlayback, initialState, isCurrentConnection, laneVisualToken, reconnectDelay, reduceFrame, shouldTransmitMic, visibleStatus } from './state.mjs'
 
 const SEND_RATE = 16000
 const SPEECH_ON = 0.055
@@ -8,12 +8,14 @@ const elements = {
   app: document.querySelector('#app'),
   statusLabel: document.querySelector('#status-label'),
   statusDetail: document.querySelector('#status-detail'),
+  activeLane: document.querySelector('#active-lane'),
   elapsed: document.querySelector('#elapsed'),
   startButton: document.querySelector('#start-call'),
   startPanel: document.querySelector('#start-panel'),
   controls: document.querySelector('#call-controls'),
   orb: document.querySelector('#orb'),
   mute: document.querySelector('#mute-call'),
+  captions: document.querySelector('#captions-call'),
   end: document.querySelector('#end-call'),
   approvalSheet: document.querySelector('#approval-sheet'),
   approvalQuestion: document.querySelector('#approval-question'),
@@ -22,7 +24,11 @@ const elements = {
   deny: document.querySelector('#deny-approval'),
   taskEmbers: document.querySelector('#task-embers'),
   restoreAudio: document.querySelector('#restore-audio'),
-  toast: document.querySelector('#toast')
+  toast: document.querySelector('#toast'),
+  laneSelect: document.querySelector('#lane-select'),
+  liveCaption: document.querySelector('#live-caption'),
+  audioModes: [...document.querySelectorAll('input[name="audio-mode"]')],
+  soundCues: document.querySelector('#sound-cues')
 }
 
 let state = initialState()
@@ -37,6 +43,10 @@ let startedAt = 0
 let renderFrame = 0
 let lastMicAbove = 0
 let toastTimer = 0
+let captionTimer = 0
+let interruptUntil = 0
+let reconnectTimer = 0
+let intentionalClose = false
 
 function dispatch (frame) {
   state = reduceFrame(state, frame)
@@ -53,16 +63,45 @@ function render () {
   elements.app.dataset.session = state.session
   elements.app.dataset.voice = state.voice
   elements.app.dataset.muted = String(state.muted)
+  elements.app.dataset.duplex = state.duplexMode
+  elements.app.dataset.working = String(state.pending.length > 0)
+  const laneToken = laneVisualToken(state.activeLane || state.selectedLane)
+  elements.app.style.setProperty('--lane-hue', String(laneToken.hue))
+  elements.app.style.setProperty('--lane-motion', String(laneToken.motion))
   elements.statusLabel.textContent = status.label
   elements.statusDetail.textContent = status.detail || state.detail || ''
-  elements.startButton.disabled = state.session !== 'idle'
+  elements.startButton.disabled = state.session !== 'idle' || !state.selectedLane
   elements.startButton.textContent = state.session === 'error' || state.session === 'ended' ? 'Start again' : 'Start voice'
   elements.startPanel.hidden = !['idle', 'error', 'ended'].includes(state.session)
-  elements.controls.hidden = !['starting', 'live'].includes(state.session)
+  elements.controls.hidden = !['starting', 'live', 'reconnecting'].includes(state.session)
   elements.mute.setAttribute('aria-pressed', String(state.muted))
   elements.mute.querySelector('span:last-child').textContent = state.muted ? 'Unmute' : 'Mute'
   elements.mute.querySelector('.control-icon').textContent = state.muted ? '○' : '◉'
+  elements.captions.setAttribute('aria-pressed', String(state.captionsEnabled))
+  elements.captions.querySelector('span:last-child').textContent = state.captionsEnabled ? 'Captions on' : 'Captions'
   elements.orb.setAttribute('aria-label', state.session === 'idle' ? 'Start voice call' : status.label)
+  elements.laneSelect.disabled = !['idle', 'error', 'ended'].includes(state.session)
+  for (const input of elements.audioModes) {
+    input.checked = input.value === state.duplexMode
+    input.disabled = !['idle', 'error', 'ended'].includes(state.session)
+  }
+  elements.soundCues.checked = state.soundCues
+  elements.soundCues.disabled = !['idle', 'error', 'ended'].includes(state.session)
+  elements.activeLane.hidden = !state.laneName
+  elements.activeLane.textContent = state.laneName
+  const captions = state.captionsEnabled ? state.captions : []
+  elements.liveCaption.hidden = !captions.length
+  elements.liveCaption.replaceChildren(...captions.map((caption, index) => {
+    const line = document.createElement('div')
+    line.className = `caption-line${index === captions.length - 1 ? ' caption-current' : ''}`
+    line.dataset.speaker = caption.speaker
+    const speaker = document.createElement('span')
+    speaker.textContent = caption.speaker === 'user' ? 'You' : 'Gemini'
+    const text = document.createElement('p')
+    text.textContent = caption.text
+    line.append(speaker, text)
+    return line
+  }))
 
   const approval = state.approvals[0]
   elements.approvalSheet.hidden = !approval
@@ -92,6 +131,26 @@ function showToast (message) {
   elements.toast.textContent = message
   elements.toast.hidden = false
   toastTimer = window.setTimeout(() => { elements.toast.hidden = true }, 3600)
+}
+
+function emitFeedback (kind) {
+  const cue = feedbackCue(kind)
+  if (cue.vibration.length) navigator.vibrate?.(cue.vibration)
+  if (!state.soundCues || !audioContext || !cue.frequency) return
+  try {
+    const oscillator = audioContext.createOscillator()
+    const gain = audioContext.createGain()
+    const now = audioContext.currentTime
+    oscillator.frequency.value = cue.frequency
+    oscillator.type = 'sine'
+    gain.gain.setValueAtTime(0.0001, now)
+    gain.gain.exponentialRampToValueAtTime(0.035, now + 0.008)
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + cue.duration)
+    oscillator.connect(gain)
+    gain.connect(audioContext.destination)
+    oscillator.start(now)
+    oscillator.stop(now + cue.duration + 0.01)
+  } catch {}
 }
 
 function bytesToBase64 (pcm) {
@@ -149,6 +208,13 @@ function createPlayer (context) {
       for (let i = 0; i < bins.length; i++) peak = Math.max(peak, bins[i])
       return Math.sqrt(peak / 255)
     },
+    isPlaying () {
+      return hasScheduledPlayback({
+        liveCount: live.size,
+        scheduledUntil: next,
+        currentTime: context.currentTime
+      })
+    },
     flush () {
       for (const node of live) {
         try { node.stop() } catch {}
@@ -168,10 +234,19 @@ function handleMicChunk (pcm, peak) {
   const now = performance.now()
   if (peak >= SPEECH_ON) lastMicAbove = now
   const speaking = peak >= SPEECH_ON || now - lastMicAbove < SPEECH_OFF_MS
-  if (!state.muted && socket?.readyState === WebSocket.OPEN) {
+  const assistantSpeaking = player?.isPlaying() || false
+  const send = shouldTransmitMic({
+    mode: state.duplexMode,
+    assistantSpeaking,
+    interrupting: now < interruptUntil
+  })
+  if (!state.muted && send && socket?.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({ type: 'audio', data: bytesToBase64(pcm) }))
   }
-  if (state.voice !== 'assistant' || speaking) dispatch({ type: 'mic_level', level: peak, speaking })
+  const userSpeaking = speaking && send
+  if (state.voice !== 'assistant' || userSpeaking) {
+    dispatch({ type: 'mic_level', level: peak, speaking: userSpeaking })
+  }
 }
 
 async function startCapture (context, stream) {
@@ -229,12 +304,19 @@ function unlockAudio (context) {
 function socketUrl () {
   const url = new URL('./relay', window.location.href)
   url.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  url.searchParams.set('lane', state.selectedLane)
   return url.toString()
 }
 
 function receiveFrame (event) {
   let frame
   try { frame = JSON.parse(event.data) } catch { return }
+
+  if (frame.type === 'ready') {
+    const resumedFresh = state.session === 'reconnecting'
+    emitFeedback('connected')
+    if (resumedFresh) showToast('Reconnected — fresh voice session, same lane')
+  }
 
   if (frame.type === 'audio' && frame.data) {
     const bytes = base64ToBytes(frame.data)
@@ -243,7 +325,19 @@ function receiveFrame (event) {
     return
   }
   if (frame.type === 'speech_started') player?.flush()
-  if (frame.type === 'task_failed' && frame.detail) showToast(frame.detail)
+  if (frame.type === 'task_needs_input') emitFeedback('approval')
+  if (frame.type === 'task_failed') {
+    emitFeedback('failed')
+    if (frame.detail) showToast(frame.detail)
+  }
+  if (frame.type === 'in_text' || frame.type === 'out_text') {
+    frame.at = Date.now()
+    window.clearTimeout(captionTimer)
+    elements.liveCaption.classList.remove('caption-fade')
+    void elements.liveCaption.offsetWidth
+    elements.liveCaption.classList.add('caption-fade')
+    captionTimer = window.setTimeout(() => dispatch({ type: 'caption_clear' }), 6200)
+  }
   dispatch(frame)
 }
 
@@ -259,10 +353,57 @@ function animationLoop () {
   renderFrame = window.requestAnimationFrame(animationLoop)
 }
 
+function connectSocket () {
+  intentionalClose = false
+  const connection = new WebSocket(socketUrl())
+  socket = connection
+  connection.onmessage = (event) => {
+    if (isCurrentConnection(socket, connection)) receiveFrame(event)
+  }
+  connection.onerror = () => {
+    if (isCurrentConnection(socket, connection)) showToast('The private relay could not connect.')
+  }
+  connection.onclose = () => {
+    if (!isCurrentConnection(socket, connection)) return
+    socket = null
+    if (intentionalClose || !['starting', 'live', 'reconnecting'].includes(state.session)) return
+    player?.flush()
+    interruptUntil = 0
+    scheduleReconnect()
+  }
+}
+
+function scheduleReconnect () {
+  if (state.reconnectAttempt >= 3) {
+    state = {
+      ...state,
+      session: 'ended',
+      voice: 'listening',
+      detail: 'The voice connection could not be restored. Your lane and preferences are still selected.'
+    }
+    emitFeedback('failed')
+    releaseResources(false)
+    render()
+    return
+  }
+  const nextAttempt = state.reconnectAttempt + 1
+  dispatch({ type: 'reconnecting', attempt: nextAttempt })
+  window.clearTimeout(reconnectTimer)
+  reconnectTimer = window.setTimeout(connectSocket, reconnectDelay(nextAttempt))
+}
+
 async function startCall () {
-  if (!['idle', 'error', 'ended'].includes(state.session)) return
+  if (!['idle', 'error', 'ended'].includes(state.session) || !state.selectedLane) return
   await stopCall(false)
-  state = { ...initialState(), session: 'starting' }
+  state = {
+    ...initialState(),
+    session: 'starting',
+    selectedLane: state.selectedLane,
+    laneName: state.laneName,
+    captionsEnabled: state.captionsEnabled,
+    duplexMode: state.duplexMode,
+    soundCues: state.soundCues
+  }
   startedAt = Date.now()
   render()
 
@@ -281,17 +422,7 @@ async function startCall () {
     }
     await startCapture(audioContext, mediaStream)
 
-    socket = new WebSocket(socketUrl())
-    socket.onopen = () => dispatch({ type: 'socket_open' })
-    socket.onmessage = receiveFrame
-    socket.onerror = () => showToast('The private relay could not connect.')
-    socket.onclose = () => {
-      if (['starting', 'live'].includes(state.session)) {
-        state = { ...state, session: 'ended', voice: 'listening', detail: state.detail || 'The voice connection closed.' }
-        releaseResources(false)
-        render()
-      }
-    }
+    connectSocket()
   } catch (error) {
     state = { ...state, session: 'error', detail: error?.message || String(error) }
     releaseResources(true)
@@ -300,6 +431,9 @@ async function startCall () {
 }
 
 function releaseResources (closeSocket = true) {
+  window.clearTimeout(reconnectTimer)
+  reconnectTimer = 0
+  if (closeSocket) intentionalClose = true
   if (closeSocket && socket) {
     try {
       if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'close' }))
@@ -307,6 +441,7 @@ function releaseResources (closeSocket = true) {
     } catch {}
   }
   socket = null
+  interruptUntil = 0
   captureNode?.disconnect?.()
   captureSource?.disconnect?.()
   captureSink?.disconnect?.()
@@ -322,8 +457,17 @@ function releaseResources (closeSocket = true) {
 }
 
 async function stopCall (setIdle = true) {
+  if (setIdle && ['starting', 'live', 'reconnecting'].includes(state.session)) emitFeedback('ended')
   releaseResources(true)
-  if (setIdle) state = { ...initialState(), session: 'idle' }
+  if (setIdle) state = {
+    ...initialState(),
+    session: 'idle',
+    selectedLane: state.selectedLane,
+    laneName: state.laneName,
+    captionsEnabled: state.captionsEnabled,
+    duplexMode: state.duplexMode,
+    soundCues: state.soundCues
+  }
   render()
 }
 
@@ -364,10 +508,36 @@ async function restoreAudio () {
 
 async function boot () {
   try {
-    const response = await fetch('./status', { cache: 'no-store', credentials: 'same-origin' })
-    const payload = await response.json()
-    if (!response.ok || !payload.ok) throw new Error(payload.detail || 'Private relay unavailable')
-    state = { ...initialState(), session: 'idle' }
+    const [statusResponse, lanesResponse] = await Promise.all([
+      fetch('./status', { cache: 'no-store', credentials: 'same-origin' }),
+      fetch('./lanes', { cache: 'no-store', credentials: 'same-origin' })
+    ])
+    const [statusPayload, lanesPayload] = await Promise.all([statusResponse.json(), lanesResponse.json()])
+    if (!statusResponse.ok || !statusPayload.ok) throw new Error(statusPayload.detail || 'Private relay unavailable')
+    if (!lanesResponse.ok || !Array.isArray(lanesPayload.lanes) || !lanesPayload.lanes.length) {
+      throw new Error('No Telegram topic lanes are configured')
+    }
+    elements.laneSelect.replaceChildren(...lanesPayload.lanes.map((lane) => {
+      const option = document.createElement('option')
+      option.value = lane.id
+      option.textContent = lane.name
+      return option
+    }))
+    const remembered = localStorage.getItem('hermes-live-lane')
+    const captionsEnabled = localStorage.getItem('hermes-live-captions') === 'on'
+    const duplexMode = localStorage.getItem('hermes-live-duplex') === 'natural' ? 'natural' : 'stable'
+    const soundCues = localStorage.getItem('hermes-live-sound-cues') === 'on'
+    const selected = lanesPayload.lanes.find((lane) => lane.id === remembered) || lanesPayload.lanes[0]
+    elements.laneSelect.value = selected.id
+    state = {
+      ...initialState(),
+      session: 'idle',
+      selectedLane: selected.id,
+      laneName: selected.name,
+      captionsEnabled,
+      duplexMode,
+      soundCues
+    }
   } catch (error) {
     state = { ...initialState(), session: 'error', detail: error?.message || String(error) }
   }
@@ -376,10 +546,39 @@ async function boot () {
 }
 
 elements.startButton.addEventListener('click', startCall)
+elements.laneSelect.addEventListener('change', () => {
+  const option = elements.laneSelect.selectedOptions[0]
+  if (!option) return
+  localStorage.setItem('hermes-live-lane', option.value)
+  dispatch({ type: 'lane_selected', id: option.value, name: option.textContent })
+})
 elements.orb.addEventListener('click', () => {
   if (['idle', 'error', 'ended'].includes(state.session)) void startCall()
+  else if (state.session === 'live' && state.voice === 'assistant' && state.duplexMode === 'stable') {
+    interruptUntil = performance.now() + 2600
+    player?.flush()
+    dispatch({ type: 'speech_started' })
+    navigator.vibrate?.(12)
+    showToast('Listening — go ahead')
+  }
+})
+for (const input of elements.audioModes) {
+  input.addEventListener('change', () => {
+    if (!input.checked) return
+    localStorage.setItem('hermes-live-duplex', input.value)
+    dispatch({ type: 'duplex_mode', mode: input.value })
+  })
+}
+elements.soundCues.addEventListener('change', () => {
+  localStorage.setItem('hermes-live-sound-cues', elements.soundCues.checked ? 'on' : 'off')
+  dispatch({ type: 'sound_cues', enabled: elements.soundCues.checked })
 })
 elements.mute.addEventListener('click', toggleMute)
+elements.captions.addEventListener('click', () => {
+  const enabled = !state.captionsEnabled
+  localStorage.setItem('hermes-live-captions', enabled ? 'on' : 'off')
+  dispatch({ type: 'caption_toggle', enabled })
+})
 elements.end.addEventListener('click', () => void stopCall())
 elements.approve.addEventListener('click', () => answerApproval('approve'))
 elements.deny.addEventListener('click', () => answerApproval('deny'))
@@ -392,6 +591,7 @@ render()
 renderFrame = window.requestAnimationFrame(animationLoop)
 window.addEventListener('beforeunload', () => {
   window.cancelAnimationFrame(renderFrame)
+  window.clearTimeout(captionTimer)
   releaseResources(true)
 })
 void boot()

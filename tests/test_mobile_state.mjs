@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { initialState, reduceFrame, visibleStatus } from '../mobile/state.mjs'
+import { feedbackCue, hasScheduledPlayback, initialState, isCurrentConnection, laneVisualToken, reconnectDelay, reduceFrame, shouldTransmitMic, visibleStatus } from '../mobile/state.mjs'
 
 test('task frames maintain a per-task approval queue and exact ids', () => {
   let state = initialState()
@@ -42,4 +42,89 @@ test('visible status prioritizes work and mute without hiding approvals', () => 
 
   state = { ...state, approvals: [{ id: 'a', question: 'Allow?', sending: false }] }
   assert.equal(visibleStatus(state).label, 'Approval needed')
+})
+
+test('lane selection is retained in idle state and reported when the relay opens', () => {
+  let state = { ...initialState(), session: 'idle', selectedLane: 'garage-r129', laneName: 'Garage — R129' }
+  state = reduceFrame(state, { type: 'lane_selected', id: 'garage-r129', name: 'Garage — R129' })
+  assert.equal(state.selectedLane, 'garage-r129')
+  assert.equal(state.laneName, 'Garage — R129')
+
+  state = reduceFrame(state, { type: 'lane_context', id: 'garage-r129', name: 'Garage — R129' })
+  assert.equal(state.activeLane, 'garage-r129')
+  assert.equal(state.laneName, 'Garage — R129')
+  assert.equal(visibleStatus(state).detail, 'Start when you are ready')
+})
+
+test('lane visuals are stable and remain inside the restrained warm palette', () => {
+  assert.deepEqual(laneVisualToken('garage-r129'), laneVisualToken('garage-r129'))
+  const token = laneVisualToken('personal-context')
+  assert.ok(token.hue >= 14 && token.hue <= 47)
+  assert.ok(token.motion >= 0.92 && token.motion <= 1.08)
+})
+
+test('reconnect state is explicit and retry delay is bounded', () => {
+  assert.deepEqual([1, 2, 3, 4].map(reconnectDelay), [500, 1000, 2000, 2000])
+  const state = reduceFrame(
+    { ...initialState(), session: 'live', pending: ['old'], approvals: [{ id: 'old' }], captions: [{ speaker: 'user', text: 'old' }] },
+    { type: 'reconnecting', attempt: 2 }
+  )
+  assert.equal(state.session, 'reconnecting')
+  assert.deepEqual(state.pending, [])
+  assert.deepEqual(state.approvals, [])
+  assert.deepEqual(state.captions, [])
+  assert.equal(visibleStatus(state).label, 'Reconnecting')
+  assert.match(visibleStatus(state).detail, /fresh voice session/)
+})
+
+test('stable playback gating follows scheduled buffers rather than analyser residue', () => {
+  assert.equal(hasScheduledPlayback({ liveCount: 1, scheduledUntil: 12, currentTime: 11.5 }), true)
+  assert.equal(hasScheduledPlayback({ liveCount: 1, scheduledUntil: 12, currentTime: 12.1 }), false)
+  assert.equal(hasScheduledPlayback({ liveCount: 0, scheduledUntil: 12, currentTime: 11.5 }), false)
+})
+
+test('stale socket callbacks cannot act on a replacement connection', () => {
+  const oldSocket = {}
+  const newSocket = {}
+  assert.equal(isCurrentConnection(oldSocket, oldSocket), true)
+  assert.equal(isCurrentConnection(newSocket, oldSocket), false)
+  assert.equal(isCurrentConnection(null, oldSocket), false)
+})
+
+test('feedback cues stay brief and sound preference is explicit', () => {
+  assert.deepEqual(feedbackCue('approval').vibration, [18, 35, 18])
+  assert.ok(feedbackCue('connected').duration <= 0.06)
+  const enabled = reduceFrame(initialState(), { type: 'sound_cues', enabled: true })
+  assert.equal(enabled.soundCues, true)
+})
+
+test('duplex modes make speakerphone stability deterministic', () => {
+  assert.equal(shouldTransmitMic({ mode: 'stable', assistantSpeaking: true }), false)
+  assert.equal(shouldTransmitMic({ mode: 'stable', assistantSpeaking: false }), true)
+  assert.equal(shouldTransmitMic({ mode: 'natural', assistantSpeaking: true }), true)
+  assert.equal(shouldTransmitMic({ mode: 'stable', assistantSpeaking: true, interrupting: true }), true)
+
+  const natural = reduceFrame(initialState(), { type: 'duplex_mode', mode: 'natural' })
+  assert.equal(natural.duplexMode, 'natural')
+})
+
+test('streaming transcripts keep two ephemeral speaker-labelled caption lines', () => {
+  let state = { ...initialState(), session: 'live', captionsEnabled: true }
+  state = reduceFrame(state, { type: 'in_text', text: 'I am checking', at: 1000 })
+  state = reduceFrame(state, { type: 'in_text', text: 'the garage', at: 1200 })
+  state = reduceFrame(state, { type: 'out_text', text: 'The next task', at: 2000 })
+
+  assert.deepEqual(state.captions, [
+    { speaker: 'user', text: 'I am checking the garage', updatedAt: 1200 },
+    { speaker: 'assistant', text: 'The next task', updatedAt: 2000 }
+  ])
+
+  state = reduceFrame(state, { type: 'out_text', text: 'The next task is the harness.', at: 2200 })
+  assert.equal(state.captions.length, 2)
+  assert.deepEqual(state.captions[1], {
+    speaker: 'assistant', text: 'The next task is the harness.', updatedAt: 2200
+  })
+
+  state = reduceFrame(state, { type: 'caption_clear' })
+  assert.deepEqual(state.captions, [])
 })

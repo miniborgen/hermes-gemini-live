@@ -15,7 +15,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 
-from . import config, relay
+from . import config, lanes, relay
 
 _NO_STORE = {"Cache-Control": "no-store"}
 _SECURITY_HEADERS = {
@@ -86,11 +86,19 @@ def create_app(*, allowed_login: str) -> FastAPI:
     async def status() -> dict[str, object]:
         return config.status_dict()
 
+    @app.get("/lanes")
+    async def voice_lanes() -> dict[str, object]:
+        return {"lanes": lanes.list_lanes()}
+
     @app.websocket("/relay")
     async def live_relay(ws: WebSocket) -> None:
         client_host = ws.client.host if ws.client else None
         if not (_loopback(client_host) or _identity_allowed(ws.headers, allowed_login)):
             await ws.close(code=4403)
+            return
+        voice_lane = lanes.resolve_lane(ws.query_params.get("lane"))
+        if voice_lane is None:
+            await ws.close(code=4404)
             return
         await ws.accept()
         try:
@@ -98,6 +106,7 @@ def create_app(*, allowed_login: str) -> FastAPI:
                 ws,
                 session_key=config.api_server_session_key(),
                 profile=config.serving_profile(),
+                voice_lane=voice_lane,
             )
         except WebSocketDisconnect:
             pass

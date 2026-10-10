@@ -104,8 +104,10 @@ def browser_frames(raw: dict) -> list[dict]:
     if content.get("turnComplete"):
         out.append({"type": "turn_complete"})
 
-    for field, kind in (("inputTranscription", "in_text"), ("outputTranscription", "out_text")):
-        transcript = raw.get(field) or {}
+    for field, kind in (("interimInputTranscription", "in_text"),
+                        ("inputTranscription", "in_text"),
+                        ("outputTranscription", "out_text")):
+        transcript = content.get(field) or raw.get(field) or {}
         if text := (transcript.get("text") or ""):
             out.append({"type": kind, "text": text})
 

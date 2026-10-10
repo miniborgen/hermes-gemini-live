@@ -17,7 +17,7 @@
   <main id="app" data-session="boot" data-voice="listening" data-muted="false">
     <header class="topbar">
       <div class="brand"><span class="brand-mark"></span><span>Hermes Live</span></div>
-      <span id="connection-dot" class="connection-dot" aria-label="Connection status"></span>
+      <div class="topbar-status"><span id="active-lane" class="active-lane" hidden></span><span id="connection-dot" class="connection-dot" aria-label="Connection status"></span></div>
     </header>
 
     <section class="stage" aria-live="polite">
@@ -35,6 +35,7 @@
         <p id="status-detail">Checking the private voice relay…</p>
         <span id="elapsed" class="elapsed">0:00</span>
       </div>
+      <div id="live-caption" class="live-caption" aria-live="polite" aria-atomic="false" hidden></div>
     </section>
 
     <section id="approval-sheet" class="approval-sheet" aria-labelledby="approval-title" hidden>
@@ -49,13 +50,37 @@
     </section>
 
     <section id="start-panel" class="start-panel">
-      <p>Gemini can hear the room while a call is active. Only your direct tap can approve an action.</p>
+      <label class="lane-picker" for="lane-select">
+        <span>Swim lane</span>
+        <select id="lane-select" aria-describedby="lane-help" disabled>
+          <option value="">Loading your topics…</option>
+        </select>
+      </label>
+      <p id="lane-help">Gemini starts with this topic’s skill and GBrain context. A new lane starts a new call.</p>
+      <fieldset class="audio-mode-picker">
+        <legend>Conversation audio</legend>
+        <label>
+          <input id="audio-mode" type="radio" name="audio-mode" value="stable" checked>
+          <span><strong>Stable speaker</strong><small>Tap the orb when you want to interrupt.</small></span>
+        </label>
+        <label>
+          <input type="radio" name="audio-mode" value="natural">
+          <span><strong>Natural barge-in</strong><small>Best with headphones or quiet rooms.</small></span>
+        </label>
+      </fieldset>
+      <label class="preference-switch" for="sound-cues">
+        <span><strong>Quiet sound cues</strong><small>Connection, approval, and failure only.</small></span>
+        <input id="sound-cues" type="checkbox">
+      </label>
       <button id="start-call" class="button button-primary button-large" type="button" disabled>Start voice</button>
     </section>
 
     <nav id="call-controls" class="call-controls" aria-label="Call controls" hidden>
       <button id="mute-call" class="round-control" type="button" aria-pressed="false">
         <span class="control-icon" aria-hidden="true">◉</span><span>Mute</span>
+      </button>
+      <button id="captions-call" class="round-control" type="button" aria-pressed="false">
+        <span class="control-icon caption-icon" aria-hidden="true">CC</span><span>Captions</span>
       </button>
       <button id="end-call" class="round-control end-control" type="button">
         <span class="control-icon" aria-hidden="true">×</span><span>End</span>
