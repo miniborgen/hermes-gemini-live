@@ -38,7 +38,10 @@ test('voice frames distinguish user, thinking, and assistant motion states', () 
 
 test('visible status prioritizes work and mute without hiding approvals', () => {
   let state = { ...initialState(), session: 'live', voice: 'assistant', muted: true, pending: ['a'] }
-  assert.equal(visibleStatus(state).label, 'Mini is working')
+  assert.equal(visibleStatus(state).detail, 'Working on 1 task for you')
+
+  state = { ...state, pending: ['a', 'b', 'c', 'd'] }
+  assert.equal(visibleStatus(state).detail, 'Working on 4 tasks for you')
 
   state = { ...state, approvals: [{ id: 'a', question: 'Allow?', sending: false }] }
   assert.equal(visibleStatus(state).label, 'Approval needed')
@@ -222,6 +225,14 @@ test('conversation highlights summarize common inquiries instead of repeating th
   assert.equal(
     conversationHighlight('The driver-door body-side striker was adjusted downward on September 29th.'),
     'Driver-door striker adjustment'
+  )
+  assert.equal(
+    conversationHighlight('What was that about meeting up with August? I am checking your recent messages for mentioned meetups with August. You planned to meet Emy and August at Glen Park for pizza.'),
+    'Kids’ pizza playdate in Glen Park'
+  )
+  assert.equal(
+    conversationHighlight('I hate a things from a teacher. I am looking into Mila’s math activity. It appears there is no math activity from Mila’s teacher.'),
+    'No recent math activity from Mila’s teacher'
   )
 })
 

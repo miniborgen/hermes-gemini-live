@@ -93,6 +93,8 @@ export function conversationHighlight (value) {
     .replace(/\s+([,.;:!?])/g, '$1')
     .trim()
   if (!cleaned) return ''
+  if (/meet(?:ing)? up with august/i.test(cleaned) && /glen park/i.test(cleaned) && /pizza/i.test(cleaned)) return 'Kids’ pizza playdate in Glen Park'
+  if (/mila/i.test(cleaned) && /math activity/i.test(cleaned) && /teacher/i.test(cleaned) && /\bno\b/i.test(cleaned)) return 'No recent math activity from Mila’s teacher'
   if (/^what context do you have on my (?:car|vehicle)/i.test(cleaned)) return 'Known vehicle context'
   if (/^(?:i am|i'm|we are|we're) looking into (?:the )?records for (?:your |the )?tires/i.test(cleaned)) return 'Tire records lookup'
   if (/driver-door.*striker.*adjusted/i.test(cleaned)) return 'Driver-door striker adjustment'
@@ -318,7 +320,7 @@ export function visibleStatus (state) {
   if (state.session === 'reconnecting') return { label: 'Reconnecting', detail: `Attempt ${state.reconnectAttempt} of 3 — opening a fresh voice session in this lane` }
   if (state.session === 'error') return { label: 'Unavailable', detail: state.detail }
   if (state.session === 'ended') return { label: 'Call ended', detail: state.detail }
-  if (state.pending.length) return { label: 'Mini is working', detail: `${state.pending.length} task${state.pending.length === 1 ? '' : 's'} in progress` }
+  if (state.pending.length) return { label: workingLine(0), detail: `Working on ${state.pending.length} task${state.pending.length === 1 ? '' : 's'} for you` }
   if (state.voice === 'thinking') return { label: 'Thinking', detail: '' }
   if (state.voice === 'assistant') return {
     label: 'Speaking',

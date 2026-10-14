@@ -184,10 +184,10 @@ button:focus-visible { outline: 2px solid #d5aa70; outline-offset: 4px; }
 .status-copy h1 { max-width: min(90vw, 520px); margin: 0; font-family: "Source Serif 4", Georgia, serif; font-size: clamp(2.8rem, 12vw, 5.25rem); font-weight: 600; line-height: .98; letter-spacing: -.035em; text-wrap: balance; }
 .status-copy p { min-height: 20px; max-width: 310px; margin: 8px 0 0; color: var(--muted); font-size: 13px; line-height: 1.45; letter-spacing: .01em; }
 .session-status { position: absolute; z-index: 4; right: 14px; bottom: calc(var(--bottom-reserve) - 10px); left: 14px; min-height: 32px; margin: 0 auto; pointer-events: none; }
-[data-working="true"] .session-status::before { content: ""; width: 10px; height: 10px; margin: 0 auto 5px; border: 1px solid rgba(225,190,146,.14); border-top-color: rgba(225,190,146,.5); border-radius: 50%; animation: ring-turn 1.8s linear infinite; }
+[data-working="true"] .session-status::before { content: ""; position: absolute; top: 31px; left: calc(50% - 76px); width: 10px; height: 10px; border: 1px solid rgba(225,190,146,.14); border-top-color: rgba(225,190,146,.5); border-radius: 50%; animation: ring-turn 1.8s linear infinite; }
 [data-working="true"] .session-status { bottom: calc(var(--bottom-reserve) - 82px); }
 [data-working="true"] .status-copy h1 { font-size: 24px; color: rgba(229,217,207,.58); font-weight: 500; }
-[data-working="true"] .status-copy p { margin-top: 2px; font-size: 9px; }
+[data-working="true"] .status-copy p { margin-top: 2px; padding-left: 16px; font-size: 9px; }
 #app[data-session="idle"] .session-status { bottom: calc(var(--bottom-reserve) - 18px); min-height: 36px; }
 #app[data-session="idle"] .status-copy h1 { color: rgba(229,217,207,.38); font-family: "Inter", system-ui, sans-serif; font-size: 13px; font-weight: 500; line-height: 1.2; letter-spacing: -.01em; }
 #app[data-session="idle"] .status-copy p { margin-top: 3px; color: rgba(203,191,181,.26); font-size: 9px; }
