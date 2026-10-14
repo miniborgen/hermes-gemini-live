@@ -16,7 +16,10 @@ export function initialState () {
     duplexMode: 'stable',
     soundCues: false,
     captionsEnabled: false,
-    captions: []
+    captions: [],
+    displayMode: 'orb',
+    highlights: [],
+    highlightWindow: []
   }
 }
 
@@ -71,6 +74,93 @@ export function shouldConnectAfterLaneSwitch ({ hasSocket, captureReady }) {
   return Boolean(hasSocket || captureReady)
 }
 
+function transcriptText (priorValue, incomingValue) {
+  const prior = String(priorValue || '').trim()
+  const incoming = String(incomingValue || '').trim()
+  if (!prior) return incoming
+  if (!incoming) return prior
+  if (incoming.startsWith(prior)) return incoming
+  if (prior.endsWith(incoming)) return prior
+  if (/^[,.;:!?)]/.test(incoming)) {
+    return `${prior.replace(/[.!?]+$/, '')}${incoming}`
+  }
+  return `${prior} ${incoming}`
+}
+
+export function conversationHighlight (value) {
+  const cleaned = String(value || '')
+    .replace(/\s+/g, ' ')
+    .replace(/\s+([,.;:!?])/g, '$1')
+    .trim()
+  if (!cleaned) return ''
+  if (/^what context do you have on my (?:car|vehicle)/i.test(cleaned)) return 'Known vehicle context'
+  if (/^(?:i am|i'm|we are|we're) looking into (?:the )?records for (?:your |the )?tires/i.test(cleaned)) return 'Tire records lookup'
+  if (/driver-door.*striker.*adjusted/i.test(cleaned)) return 'Driver-door striker adjustment'
+  const contextQuestion = cleaned.match(/^(?:what kind of|what|which) context (?:do|does|will|would|can) (?:you|i|we|this chat) (?:get|have|receive|see|use|know).*?(?:start|starting|open|opening|begin|beginning)(?:ing)? (?:this |a |the )?chat/i)
+  if (contextQuestion) return 'Context available when starting a chat'
+  const statusQuestion = cleaned.match(/(?:what happened with|status of|where (?:does|do|is|are) .*? stand|where .*? stands)/i)
+  if (statusQuestion) {
+    const subject = cleaned
+      .replace(/^.*?(?:what happened with|status of)\s+/i, '')
+      .replace(/\s+(?:and|or)\s+where .*$/i, '')
+      .replace(/^(?:the|a|an)\s+/i, '')
+      .replace(/[?.!]+$/, '')
+      .trim()
+    if (subject) return `${subject.charAt(0).toUpperCase()}${subject.slice(1)} status`
+  }
+  const sentences = cleaned.match(/[^.!?]+[.!?]?/g) || [cleaned]
+  let phrase = sentences.find((sentence) => (
+    (sentence.match(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu) || []).length >= 6
+  ))?.trim() || ''
+  for (let pass = 0; pass < 3; pass += 1) {
+    phrase = phrase.replace(
+      /^(?:(?:um+|uh+|well|so|okay|ok|like|you know|i think|i mean|kind of|sort of|basically|actually|just|we need to|we should(?: just)?|i will|i'll|let's)\b[\s,.:;—-]*)+/i,
+      ''
+    ).trim()
+  }
+  const words = phrase.match(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu) || []
+  if (words.length < 5) return ''
+  const limit = 12
+  if (words.length > limit) {
+    phrase = words.slice(0, limit).join(' ') + '…'
+  }
+  if (!phrase) return ''
+  return `${phrase.charAt(0).toUpperCase()}${phrase.slice(1)}`
+}
+
+function highlightWindowFrom (state, speaker, frame) {
+  const incoming = String(frame.text || '').trim()
+  if (!incoming) return state.highlightWindow
+  const at = Number(frame.at || 0)
+  const prior = state.highlightWindow.at(-1)
+  let source = incoming
+  if (prior?.speaker === speaker && at - prior.updatedAt < 2500) {
+    source = transcriptText(prior.source, frame.text)
+  }
+  const segment = { speaker, source, updatedAt: at }
+  if (prior?.speaker === speaker && at - prior.updatedAt < 2500) {
+    return [...state.highlightWindow.slice(0, -1), segment].slice(-4)
+  }
+  return [...state.highlightWindow, segment].slice(-4)
+}
+
+function commitHighlightWindow (state) {
+  if (!state.highlightWindow.length) return { highlights: state.highlights, highlightWindow: [] }
+  const source = state.highlightWindow.map((item) => item.source).join(' ')
+  const text = conversationHighlight(source)
+  if (!text) return { highlights: state.highlights, highlightWindow: [] }
+  const speakers = new Set(state.highlightWindow.map((item) => item.speaker))
+  const speaker = speakers.size === 1 ? state.highlightWindow[0].speaker : 'exchange'
+  const highlight = { text, source, speaker, updatedAt: state.highlightWindow.at(-1)?.updatedAt || 0 }
+  const prior = state.highlights.at(-1)
+  return {
+    highlights: prior?.text === text
+      ? [...state.highlights.slice(0, -1), highlight]
+      : [...state.highlights, highlight].slice(-6),
+    highlightWindow: []
+  }
+}
+
 function captionsFrom (state, speaker, frame) {
   if (!state.captionsEnabled) return state.captions
   const incoming = String(frame.text || '').trim()
@@ -78,9 +168,7 @@ function captionsFrom (state, speaker, frame) {
   const prior = state.captions.at(-1)
   let text = incoming
   if (prior?.speaker === speaker && Number(frame.at || 0) - prior.updatedAt < 2500) {
-    if (incoming.startsWith(prior.text)) text = incoming
-    else if (prior.text.endsWith(incoming)) text = prior.text
-    else text = `${prior.text}${/^\s/.test(frame.text || '') ? '' : ' '}${incoming}`
+    text = transcriptText(prior.text, frame.text)
   }
   const caption = { speaker, text, updatedAt: Number(frame.at || 0) }
   if (prior?.speaker === speaker && Number(frame.at || 0) - prior.updatedAt < 2500) {
@@ -104,6 +192,8 @@ export function reduceFrame (state, frame) {
         pending: [],
         approvals: [],
         captions: [],
+        highlights: [],
+        highlightWindow: [],
         detail: ''
       }
     case 'mic_level':
@@ -113,15 +203,25 @@ export function reduceFrame (state, frame) {
         level: Math.max(0, Math.min(1, Number(frame.level) || 0))
       }
     case 'in_text':
-      return { ...state, voice: 'thinking', detail: '', captions: captionsFrom(state, 'user', frame) }
+      return {
+        ...state,
+        voice: 'thinking',
+        detail: '',
+        captions: captionsFrom(state, 'user', frame),
+        highlightWindow: highlightWindowFrom(state, 'user', frame)
+      }
     case 'out_text':
-      return { ...state, captions: captionsFrom(state, 'assistant', frame) }
+      return {
+        ...state,
+        captions: captionsFrom(state, 'assistant', frame),
+        highlightWindow: highlightWindowFrom(state, 'assistant', frame)
+      }
     case 'audio':
       return { ...state, voice: 'assistant', level: Math.max(0, Math.min(1, Number(frame.level) || state.level)) }
     case 'speech_started':
       return { ...state, voice: 'listening', level: 0 }
     case 'turn_complete':
-      return { ...state, voice: 'listening', level: 0 }
+      return { ...state, voice: 'listening', level: 0, ...commitHighlightWindow(state) }
     case 'mute':
       return { ...state, muted: Boolean(frame.muted) }
     case 'duplex_mode':
@@ -132,6 +232,8 @@ export function reduceFrame (state, frame) {
       return { ...state, captionsEnabled: Boolean(frame.enabled), captions: frame.enabled ? state.captions : [] }
     case 'caption_clear':
       return { ...state, captions: [] }
+    case 'display_mode':
+      return { ...state, displayMode: frame.mode === 'text' ? 'text' : 'orb' }
     case 'lane_selected':
       return { ...state, selectedLane: String(frame.id || ''), laneName: String(frame.name || '') }
     case 'lane_switching':
@@ -143,11 +245,13 @@ export function reduceFrame (state, frame) {
         detail: '',
         reconnectAttempt: 0,
         selectedLane: String(frame.id || ''),
-        laneName: String(frame.name || 'General conversation'),
+        laneName: String(frame.name || 'One-off chat'),
         activeLane: null,
         pending: [],
         approvals: [],
-        captions: []
+        captions: [],
+        highlights: [],
+        highlightWindow: []
       }
     case 'lane_context':
       return {
@@ -199,9 +303,9 @@ export function reduceFrame (state, frame) {
     case 'lane':
       return { ...state, lane: frame.status || 'unavailable', detail: String(frame.detail || '') }
     case 'go_away':
-      return { ...state, session: 'ended', voice: 'listening', detail: 'Gemini ended this session. Start again to continue.' }
+      return { ...state, session: 'ended', voice: 'listening', pending: [], approvals: [], captions: [], highlights: [], highlightWindow: [], detail: 'Gemini ended this session. Start again to continue.' }
     case 'error':
-      return { ...state, session: 'error', voice: 'listening', detail: String(frame.detail || 'The voice call failed.') }
+      return { ...state, session: 'error', voice: 'listening', pending: [], approvals: [], captions: [], highlights: [], highlightWindow: [], detail: String(frame.detail || 'The voice call failed.') }
     default:
       return state
   }
@@ -218,10 +322,27 @@ export function visibleStatus (state) {
   if (state.voice === 'thinking') return { label: 'Thinking', detail: '' }
   if (state.voice === 'assistant') return {
     label: 'Speaking',
-    detail: state.duplexMode === 'stable' ? 'Tap the orb to interrupt' : ''
+    detail: state.duplexMode === 'stable' ? 'Tap to interrupt' : ''
   }
   if (state.muted) return { label: 'Muted', detail: 'The call and delegated tasks remain active' }
   if (state.voice === 'user') return { label: 'Listening', detail: 'You are speaking' }
-  if (state.session === 'idle') return { label: 'Ready', detail: state.selectedLane ? 'Start when you are ready' : 'Start a general conversation' }
-  return { label: 'Listening', detail: state.laneName || '' }
+  if (state.session === 'idle') return { label: 'Ready', detail: state.selectedLane ? 'Start when you are ready' : 'Start a one-off conversation' }
+  return { label: 'Listening', detail: '' }
+}
+
+const WORKING_LINES = [
+  'Turning the pages', 'Connecting the dots',
+  'Rummaging through the records', 'Lining up the clues',
+  'Checking under the hood', 'Untangling the details',
+  'Comparing notes', 'Chasing down the answer',
+  'Sorting the useful bits', 'Dusting off the archives',
+  'Following the thread', 'Assembling the puzzle',
+  'Cross-checking everything', 'Poking around',
+  'Reading the fine print', 'Mapping the moving parts',
+  'Tightening the bolts', 'Gluing the pieces together',
+  'Consulting the tiny librarians', 'Discombobulating productively'
+]
+
+export function workingLine (tick = 0) {
+  return WORKING_LINES[Math.abs(Math.floor(Number(tick) || 0)) % WORKING_LINES.length]
 }

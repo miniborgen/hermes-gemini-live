@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { feedbackCue, hasScheduledPlayback, initialState, isCurrentConnection, laneVisualToken, reconnectDelay, reduceFrame, shouldConnectAfterLaneSwitch, shouldTransmitMic, visibleStatus } from '../mobile/state.mjs'
+import { conversationHighlight, feedbackCue, hasScheduledPlayback, initialState, isCurrentConnection, laneVisualToken, reconnectDelay, reduceFrame, shouldConnectAfterLaneSwitch, shouldTransmitMic, visibleStatus, workingLine } from '../mobile/state.mjs'
 
 test('task frames maintain a per-task approval queue and exact ids', () => {
   let state = initialState()
@@ -44,6 +44,13 @@ test('visible status prioritizes work and mute without hiding approvals', () => 
   assert.equal(visibleStatus(state).label, 'Approval needed')
 })
 
+test('working copy rotates through a varied playful set', () => {
+  const lines = new Set(Array.from({ length: 20 }, (_, index) => workingLine(index)))
+  assert.equal(lines.size, 20)
+  assert.equal([...lines].some(line => /^Mini is /i.test(line)), false)
+  assert.match(workingLine(19), /discombobulating/i)
+})
+
 test('lane selection is retained in idle state and reported when the relay opens', () => {
   let state = { ...initialState(), session: 'idle', selectedLane: 'garage-r129', laneName: 'Garage — R129' }
   state = reduceFrame(state, { type: 'lane_selected', id: 'garage-r129', name: 'Garage — R129' })
@@ -57,8 +64,8 @@ test('lane selection is retained in idle state and reported when the relay opens
 })
 
 test('general conversation needs no lane and switching lanes clears old-session state', () => {
-  const general = { ...initialState(), session: 'idle', selectedLane: '', laneName: 'General conversation' }
-  assert.equal(visibleStatus(general).detail, 'Start a general conversation')
+  const general = { ...initialState(), session: 'idle', selectedLane: '', laneName: 'One-off chat' }
+  assert.equal(visibleStatus(general).detail, 'Start a one-off conversation')
 
   const switched = reduceFrame({
     ...general,
@@ -69,11 +76,11 @@ test('general conversation needs no lane and switching lanes clears old-session 
     pending: ['old-task'],
     approvals: [{ id: 'old-task' }],
     captions: [{ speaker: 'assistant', text: 'old words' }]
-  }, { type: 'lane_switching', id: '', name: 'General conversation' })
+  }, { type: 'lane_switching', id: '', name: 'One-off chat' })
 
   assert.equal(switched.session, 'starting')
   assert.equal(switched.selectedLane, '')
-  assert.equal(switched.laneName, 'General conversation')
+  assert.equal(switched.laneName, 'One-off chat')
   assert.equal(switched.activeLane, null)
   assert.deepEqual(switched.pending, [])
   assert.deepEqual(switched.approvals, [])
@@ -126,6 +133,8 @@ test('feedback cues stay brief and sound preference is explicit', () => {
   assert.ok(feedbackCue('connected').duration <= 0.06)
   const enabled = reduceFrame(initialState(), { type: 'sound_cues', enabled: true })
   assert.equal(enabled.soundCues, true)
+  const disabled = reduceFrame(enabled, { type: 'sound_cues', enabled: false })
+  assert.equal(disabled.soundCues, false)
 })
 
 test('duplex modes make speakerphone stability deterministic', () => {
@@ -141,7 +150,7 @@ test('duplex modes make speakerphone stability deterministic', () => {
 test('streaming transcripts keep two ephemeral speaker-labelled caption lines', () => {
   let state = { ...initialState(), session: 'live', captionsEnabled: true }
   state = reduceFrame(state, { type: 'in_text', text: 'I am checking', at: 1000 })
-  state = reduceFrame(state, { type: 'in_text', text: 'the garage', at: 1200 })
+  state = reduceFrame(state, { type: 'in_text', text: ' the garage', at: 1200 })
   state = reduceFrame(state, { type: 'out_text', text: 'The next task', at: 2000 })
 
   assert.deepEqual(state.captions, [
@@ -155,6 +164,127 @@ test('streaming transcripts keep two ephemeral speaker-labelled caption lines', 
     speaker: 'assistant', text: 'The next task is the harness.', updatedAt: 2200
   })
 
+  state = reduceFrame(state, { type: 'out_text', text: ', then test it.', at: 2300 })
+  assert.equal(state.captions[1].text, 'The next task is the harness, then test it.')
+
   state = reduceFrame(state, { type: 'caption_clear' })
   assert.deepEqual(state.captions, [])
+})
+
+test('text mode distills live speech into a bottom-up ephemeral highlight stack', () => {
+  assert.equal(
+    conversationHighlight('Um, I think we should just check the oil pressure sensor wiring next.'),
+    'Check the oil pressure sensor wiring next.'
+  )
+
+  let state = reduceFrame(initialState(), { type: 'display_mode', mode: 'text' })
+  state = reduceFrame(state, {
+    type: 'in_text',
+    text: 'I think we should just check the oil pressure sensor wiring next.',
+    at: 1000
+  })
+  state = reduceFrame(state, {
+    type: 'out_text',
+    text: 'I will compare the connector pinout and order the replacement.',
+    at: 3000
+  })
+
+  assert.equal(state.displayMode, 'text')
+  assert.deepEqual(state.highlights, [])
+  state = reduceFrame(state, { type: 'turn_complete' })
+  assert.deepEqual(state.highlights.map(item => item.text), [
+    'Check the oil pressure sensor wiring next.'
+  ])
+  assert.equal(state.highlights[0].speaker, 'exchange')
+  assert.deepEqual(state.highlightWindow, [])
+
+  state = reduceFrame(state, { type: 'reconnecting', attempt: 1 })
+  assert.deepEqual(state.highlights, [])
+})
+
+test('conversation highlights summarize common inquiries instead of repeating the transcript', () => {
+  assert.equal(
+    conversationHighlight('What kind of context do you get when I start this chat?'),
+    'Context available when starting a chat'
+  )
+  assert.equal(
+    conversationHighlight('Can you tell me what happened with the VC integration and where it stands now?'),
+    'VC integration status'
+  )
+  assert.equal(
+    conversationHighlight('What context do you have on my car?'),
+    'Known vehicle context'
+  )
+  assert.equal(
+    conversationHighlight('I am looking into the records for your tires.'),
+    'Tire records lookup'
+  )
+  assert.equal(
+    conversationHighlight('The driver-door body-side striker was adjusted downward on September 29th.'),
+    'Driver-door striker adjustment'
+  )
+})
+
+test('highlights wait for a completed longer exchange and preserve word boundaries', () => {
+  let state = reduceFrame(initialState(), {
+    type: 'in_text',
+    text: 'We need',
+    at: 1000
+  })
+  state = reduceFrame(state, {
+    type: 'in_text',
+    text: ' to make the shoulder routine feel more comfortable and human.',
+    at: 1100
+  })
+
+  state = reduceFrame(state, { type: 'speech_started' })
+  assert.deepEqual(state.highlights, [])
+  assert.match(state.highlightWindow[0].source, /need to make/)
+
+  state = reduceFrame(state, { type: 'turn_complete' })
+  assert.deepEqual(state.highlights.map(item => item.text), [
+    'Make the shoulder routine feel more comfortable and human.'
+  ])
+
+  let short = reduceFrame(initialState(), { type: 'in_text', text: 'yes', at: 2000 })
+  short = reduceFrame(short, { type: 'turn_complete' })
+  assert.deepEqual(short.highlights, [])
+})
+
+test('single-speaker highlights retain speaker identity', () => {
+  let state = reduceFrame(initialState(), {
+    type: 'out_text',
+    text: 'I will inspect the wiring harness and report the exact connector next.',
+    at: 1000
+  })
+  state = reduceFrame(state, { type: 'turn_complete' })
+  assert.equal(state.highlights[0].speaker, 'assistant')
+})
+
+test('live listening status does not duplicate the selected lane and interruption copy is display neutral', () => {
+  const listening = { ...initialState(), session: 'live', laneName: 'PT + Movement' }
+  assert.deepEqual(visibleStatus(listening), { label: 'Listening', detail: '' })
+
+  const speaking = { ...listening, voice: 'assistant', duplexMode: 'stable', displayMode: 'text' }
+  assert.deepEqual(visibleStatus(speaking), { label: 'Speaking', detail: 'Tap to interrupt' })
+})
+
+test('terminal voice states clear distilled and raw highlight content', () => {
+  const highlighted = reduceFrame(
+    { ...initialState(), session: 'live', pending: ['private-task'], approvals: [{ id: 'private-task', question: 'Private approval?' }] },
+    { type: 'in_text', text: 'private raw spoken details', at: 1000 }
+  )
+  assert.equal(highlighted.highlightWindow[0].source, 'private raw spoken details')
+
+  for (const frame of [
+    { type: 'go_away' },
+    { type: 'error', detail: 'closed' }
+  ]) {
+    const terminal = reduceFrame(highlighted, frame)
+    assert.deepEqual(terminal.highlights, [])
+    assert.deepEqual(terminal.highlightWindow, [])
+    assert.deepEqual(terminal.captions, [])
+    assert.deepEqual(terminal.pending, [])
+    assert.deepEqual(terminal.approvals, [])
+  }
 })

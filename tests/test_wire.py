@@ -96,6 +96,15 @@ def test_input_and_output_transcriptions_reach_ephemeral_captions():
     ]
 
 
+def test_transcription_precedes_turn_complete_when_they_share_a_server_frame():
+    frames = wire.browser_frames({"serverContent": {
+        "turnComplete": True,
+        "inputTranscription": {"text": "finish the shoulder routine"},
+        "outputTranscription": {"text": "I will save that completed exchange"},
+    }})
+    assert types(frames) == ["in_text", "out_text", "turn_complete"]
+
+
 def test_tool_call_survives_with_parsed_args():
     raw = {"toolCall": {"functionCalls": [
         {"id": "call_1", "name": "echo_back", "args": {"phrase": "hi"}}]}}

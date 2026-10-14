@@ -1,4 +1,4 @@
-import { feedbackCue, hasScheduledPlayback, initialState, isCurrentConnection, laneVisualToken, reconnectDelay, reduceFrame, shouldConnectAfterLaneSwitch, shouldTransmitMic, visibleStatus } from './state.mjs'
+import { feedbackCue, hasScheduledPlayback, initialState, isCurrentConnection, laneVisualToken, reconnectDelay, reduceFrame, shouldConnectAfterLaneSwitch, shouldTransmitMic, visibleStatus, workingLine } from './state.mjs'
 
 const SEND_RATE = 16000
 const SPEECH_ON = 0.055
@@ -8,11 +8,16 @@ const elements = {
   app: document.querySelector('#app'),
   statusLabel: document.querySelector('#status-label'),
   statusDetail: document.querySelector('#status-detail'),
+  currentLane: document.querySelector('#current-lane'),
   elapsed: document.querySelector('#elapsed'),
   startButton: document.querySelector('#start-call'),
   startPanel: document.querySelector('#start-panel'),
   controls: document.querySelector('#call-controls'),
   orb: document.querySelector('#orb'),
+  highlightStack: document.querySelector('#highlight-stack'),
+  highlightAnnouncer: document.querySelector('#highlight-announcer'),
+  viewOrb: document.querySelector('#view-orb'),
+  viewText: document.querySelector('#view-text'),
   mute: document.querySelector('#mute-call'),
   captions: document.querySelector('#captions-call'),
   end: document.querySelector('#end-call'),
@@ -26,8 +31,15 @@ const elements = {
   toast: document.querySelector('#toast'),
   laneSelect: document.querySelector('#lane-select'),
   liveCaption: document.querySelector('#live-caption'),
-  audioModes: [...document.querySelectorAll('input[name="audio-mode"]')],
-  soundCues: document.querySelector('#sound-cues')
+  bargeIn: document.querySelector('#barge-in'),
+  soundCues: document.querySelector('#sound-cues'),
+  drawerToggle: document.querySelector('#drawer-toggle'),
+  drawerDismiss: document.querySelector('#drawer-dismiss'),
+  settingsDrawer: document.querySelector('#settings-drawer'),
+  topElapsed: document.querySelector('#top-elapsed'),
+  topLane: document.querySelector('#top-lane'),
+  bargeState: document.querySelector('#barge-state'),
+  soundState: document.querySelector('#sound-state')
 }
 
 let state = initialState()
@@ -46,6 +58,17 @@ let captionTimer = 0
 let interruptUntil = 0
 let reconnectTimer = 0
 let intentionalClose = false
+let renderedHighlightKey = null
+let announcedHighlightKey = ''
+let renderedCaptionKey = null
+let pendingWorkerRefresh = false
+
+function applyPendingWorkerRefresh () {
+  if (!pendingWorkerRefresh) return
+  if (['starting', 'live', 'reconnecting'].includes(state.session)) return
+  pendingWorkerRefresh = false
+  window.location.reload()
+}
 
 function dispatch (frame) {
   state = reduceFrame(state, frame)
@@ -57,18 +80,27 @@ function formatElapsed (seconds) {
   return `${Math.floor(safe / 60)}:${String(safe % 60).padStart(2, '0')}`
 }
 
+function setText (element, value) {
+  const text = String(value || '')
+  if (element.textContent !== text) element.textContent = text
+}
+
 function render () {
   const status = visibleStatus(state)
   elements.app.dataset.session = state.session
   elements.app.dataset.voice = state.voice
   elements.app.dataset.muted = String(state.muted)
   elements.app.dataset.duplex = state.duplexMode
+  elements.app.dataset.display = state.displayMode
   elements.app.dataset.working = String(state.pending.length > 0)
   const laneToken = laneVisualToken(state.activeLane || state.selectedLane)
   elements.app.style.setProperty('--lane-hue', String(laneToken.hue))
   elements.app.style.setProperty('--lane-motion', String(laneToken.motion))
-  elements.statusLabel.textContent = status.label
-  elements.statusDetail.textContent = status.detail || state.detail || ''
+  setText(elements.statusLabel, state.pending.length ? workingLine(Math.floor(Date.now() / 4200)) : status.label)
+  setText(elements.statusDetail, status.detail || state.detail || '')
+  elements.app.style.setProperty('--task-count', String(Math.min(4, state.pending.length)))
+  setText(elements.currentLane, state.laneName || 'One-off chat')
+  setText(elements.topLane, state.laneName || 'One-off chat')
   elements.startButton.disabled = !['idle', 'error', 'ended'].includes(state.session)
   elements.startButton.textContent = state.session === 'error' || state.session === 'ended' ? 'Start again' : 'Start voice'
   elements.startPanel.hidden = !['idle', 'error', 'ended'].includes(state.session)
@@ -79,26 +111,82 @@ function render () {
   elements.captions.setAttribute('aria-pressed', String(state.captionsEnabled))
   elements.captions.querySelector('span:last-child').textContent = state.captionsEnabled ? 'Captions on' : 'Captions'
   elements.orb.setAttribute('aria-label', state.session === 'idle' ? 'Start voice call' : status.label)
+  elements.highlightStack.setAttribute('role', state.highlights.length ? 'list' : 'button')
+  elements.highlightStack.setAttribute('tabindex', state.highlights.length ? '-1' : '0')
+  elements.highlightStack.setAttribute('aria-label', state.highlights.length ? 'Conversation highlights' : (state.session === 'idle' ? 'Start voice call' : status.label))
+  elements.highlightStack.removeAttribute('aria-description')
+  elements.orb.hidden = state.displayMode === 'text'
+  elements.highlightStack.hidden = state.displayMode !== 'text'
+  elements.viewOrb.setAttribute('aria-pressed', String(state.displayMode === 'orb'))
+  elements.viewText.setAttribute('aria-pressed', String(state.displayMode === 'text'))
   elements.laneSelect.disabled = state.session === 'boot'
-  for (const input of elements.audioModes) {
-    input.checked = input.value === state.duplexMode
-    input.disabled = !['idle', 'error', 'ended'].includes(state.session)
-  }
+  elements.bargeIn.checked = state.duplexMode === 'natural'
   elements.soundCues.checked = state.soundCues
-  elements.soundCues.disabled = !['idle', 'error', 'ended'].includes(state.session)
+  setText(elements.bargeState, state.duplexMode === 'natural' ? 'Barging' : 'Stable')
+  setText(elements.soundState, state.soundCues ? 'Sound on' : 'Muted')
+  elements.captions.hidden = state.displayMode === 'text'
   const captions = state.captionsEnabled ? state.captions : []
-  elements.liveCaption.hidden = !captions.length
-  elements.liveCaption.replaceChildren(...captions.map((caption, index) => {
-    const line = document.createElement('div')
-    line.className = `caption-line${index === captions.length - 1 ? ' caption-current' : ''}`
-    line.dataset.speaker = caption.speaker
-    const speaker = document.createElement('span')
-    speaker.textContent = caption.speaker === 'user' ? 'You' : 'Gemini'
-    const text = document.createElement('p')
-    text.textContent = caption.text
-    line.append(speaker, text)
-    return line
-  }))
+  const showCaptions = state.displayMode === 'orb' && captions.length > 0
+  elements.liveCaption.hidden = !showCaptions
+  const captionKey = showCaptions
+    ? JSON.stringify(captions.map((caption) => [caption.speaker, caption.text, caption.updatedAt]))
+    : 'hidden'
+  if (captionKey !== renderedCaptionKey) {
+    renderedCaptionKey = captionKey
+    elements.liveCaption.replaceChildren(...(showCaptions ? captions.map((caption, index) => {
+      const line = document.createElement('div')
+      line.className = `caption-line${index === captions.length - 1 ? ' caption-current' : ''}`
+      line.dataset.speaker = caption.speaker
+      const speaker = document.createElement('span')
+      speaker.textContent = caption.speaker === 'user' ? 'You' : 'Gemini'
+      const text = document.createElement('p')
+      text.textContent = caption.text
+      line.append(speaker, text)
+      return line
+    }) : []))
+  }
+
+  const highlightKey = state.highlights.length
+    ? JSON.stringify(state.highlights.map((highlight) => [highlight.text]))
+    : `empty:${state.session}`
+  if (state.displayMode !== 'text') {
+    renderedHighlightKey = null
+    announcedHighlightKey = ''
+    if (elements.highlightStack.childElementCount) elements.highlightStack.replaceChildren()
+    setText(elements.highlightAnnouncer, '')
+  } else if (highlightKey !== renderedHighlightKey) {
+    renderedHighlightKey = highlightKey
+    if (!state.highlights.length) {
+      announcedHighlightKey = ''
+      elements.highlightAnnouncer.textContent = ''
+      const empty = document.createElement('p')
+      empty.className = 'highlight-empty'
+      empty.textContent = ''
+      elements.highlightStack.replaceChildren(empty)
+    } else {
+      elements.highlightStack.replaceChildren(...state.highlights.map((highlight, index) => {
+        const item = document.createElement('div')
+        item.className = 'highlight-item'
+        item.setAttribute('role', 'listitem')
+        item.dataset.age = String(state.highlights.length - index - 1)
+        item.dataset.speaker = highlight.speaker || 'exchange'
+        const marker = document.createElement('span')
+        marker.className = 'highlight-speaker'
+        marker.setAttribute('aria-hidden', 'true')
+        marker.textContent = highlight.speaker === 'assistant' ? 'M' : highlight.speaker === 'user' ? 'Y' : ''
+        const text = document.createElement('p')
+        text.textContent = highlight.text
+        item.append(marker, text)
+        return item
+      }))
+      const latest = state.highlights.at(-1)
+      const announceKey = latest ? `${latest.updatedAt}:${latest.text}` : ''
+      if (announceKey && announceKey !== announcedHighlightKey) {
+        announcedHighlightKey = announceKey
+        elements.highlightAnnouncer.textContent = latest.text
+      }
+    }
+  }
 
   const approval = state.approvals[0]
   elements.approvalSheet.hidden = !approval
@@ -130,24 +218,50 @@ function showToast (message) {
   toastTimer = window.setTimeout(() => { elements.toast.hidden = true }, 3600)
 }
 
-function emitFeedback (kind) {
-  const cue = feedbackCue(kind)
-  if (cue.vibration.length) navigator.vibrate?.(cue.vibration)
-  if (!state.soundCues || !audioContext || !cue.frequency) return
+function playSoundCue (context, cue) {
+  if (!context || !cue.frequency) return
   try {
-    const oscillator = audioContext.createOscillator()
-    const gain = audioContext.createGain()
-    const now = audioContext.currentTime
+    const oscillator = context.createOscillator()
+    const gain = context.createGain()
+    const now = context.currentTime
     oscillator.frequency.value = cue.frequency
     oscillator.type = 'sine'
     gain.gain.setValueAtTime(0.0001, now)
-    gain.gain.exponentialRampToValueAtTime(0.035, now + 0.008)
+    gain.gain.exponentialRampToValueAtTime(0.065, now + 0.008)
     gain.gain.exponentialRampToValueAtTime(0.0001, now + cue.duration)
     oscillator.connect(gain)
-    gain.connect(audioContext.destination)
+    gain.connect(context.destination)
     oscillator.start(now)
     oscillator.stop(now + cue.duration + 0.01)
   } catch {}
+}
+
+function emitFeedback (kind) {
+  const cue = feedbackCue(kind)
+  if (cue.vibration.length) navigator.vibrate?.(cue.vibration)
+  if (state.soundCues) playSoundCue(audioContext, cue)
+}
+
+async function playDetachedSoundCue (cue, guard = () => true) {
+  let context = null
+  try {
+    context = new AudioContext()
+    await context.resume()
+    if (!guard()) return
+    playSoundCue(context, cue)
+    await new Promise((resolve) => window.setTimeout(resolve, Math.ceil((cue.duration + 0.04) * 1000)))
+  } catch {}
+  finally {
+    if (context) await context.close().catch(() => {})
+  }
+}
+
+function previewSoundCue () {
+  if (!elements.soundCues.checked) return
+  void playDetachedSoundCue(
+    feedbackCue('connected'),
+    () => elements.soundCues.checked && state.soundCues
+  )
 }
 
 function bytesToBase64 (pcm) {
@@ -342,11 +456,11 @@ function animationLoop () {
   const assistantLevel = player?.level() || 0
   const shownLevel = state.voice === 'assistant' ? assistantLevel : state.level
   elements.orb.style.setProperty('--level', String(Math.max(0, Math.min(1, shownLevel))))
-  if (startedAt && ['starting', 'live'].includes(state.session)) {
-    elements.elapsed.textContent = formatElapsed((Date.now() - startedAt) / 1000)
-  } else {
-    elements.elapsed.textContent = '0:00'
-  }
+  const elapsedText = startedAt && ['starting', 'live'].includes(state.session)
+    ? formatElapsed((Date.now() - startedAt) / 1000)
+    : '0:00'
+  setText(elements.elapsed, elapsedText)
+  setText(elements.topElapsed, elapsedText)
   renderFrame = window.requestAnimationFrame(animationLoop)
 }
 
@@ -376,6 +490,11 @@ function scheduleReconnect () {
       ...state,
       session: 'ended',
       voice: 'listening',
+      pending: [],
+      approvals: [],
+      captions: [],
+      highlights: [],
+      highlightWindow: [],
       detail: 'The voice connection could not be restored. Your lane and preferences are still selected.'
     }
     emitFeedback('failed')
@@ -391,6 +510,7 @@ function scheduleReconnect () {
 
 async function startCall () {
   if (!['idle', 'error', 'ended'].includes(state.session)) return
+  setDrawer(false)
   await stopCall(false)
   state = {
     ...initialState(),
@@ -399,7 +519,8 @@ async function startCall () {
     laneName: state.laneName,
     captionsEnabled: state.captionsEnabled,
     duplexMode: state.duplexMode,
-    soundCues: state.soundCues
+    soundCues: state.soundCues,
+    displayMode: state.displayMode
   }
   startedAt = Date.now()
   render()
@@ -486,8 +607,17 @@ function releaseResources (closeSocket = true) {
 }
 
 async function stopCall (setIdle = true) {
-  if (setIdle && ['starting', 'live', 'reconnecting'].includes(state.session)) emitFeedback('ended')
+  if (setIdle && ['starting', 'live', 'reconnecting'].includes(state.session)) {
+    const cue = feedbackCue('ended')
+    if (cue.vibration.length) navigator.vibrate?.(cue.vibration)
+    if (state.soundCues) void playDetachedSoundCue(cue)
+  }
   releaseResources(true)
+  window.clearTimeout(captionTimer)
+  captionTimer = 0
+  renderedCaptionKey = null
+  elements.liveCaption.classList.remove('caption-fade')
+  elements.liveCaption.replaceChildren()
   if (setIdle) state = {
     ...initialState(),
     session: 'idle',
@@ -495,9 +625,11 @@ async function stopCall (setIdle = true) {
     laneName: state.laneName,
     captionsEnabled: state.captionsEnabled,
     duplexMode: state.duplexMode,
-    soundCues: state.soundCues
+    soundCues: state.soundCues,
+    displayMode: state.displayMode
   }
   render()
+  applyPendingWorkerRefresh()
 }
 
 function toggleMute () {
@@ -546,7 +678,7 @@ async function boot () {
     if (!lanesResponse.ok || !Array.isArray(lanesPayload.lanes)) {
       throw new Error('Swim lanes are unavailable')
     }
-    const general = { id: '', name: 'General conversation' }
+    const general = { id: '', name: 'One-off chat' }
     const availableLanes = [general, ...lanesPayload.lanes]
     elements.laneSelect.replaceChildren(...availableLanes.map((lane) => {
       const option = document.createElement('option')
@@ -558,6 +690,7 @@ async function boot () {
     const captionsEnabled = localStorage.getItem('hermes-live-captions') === 'on'
     const duplexMode = localStorage.getItem('hermes-live-duplex') === 'natural' ? 'natural' : 'stable'
     const soundCues = localStorage.getItem('hermes-live-sound-cues') === 'on'
+    const displayMode = localStorage.getItem('mini-live-display') === 'text' ? 'text' : 'orb'
     const selected = availableLanes.find((lane) => lane.id === remembered) || general
     elements.laneSelect.value = selected.id
     state = {
@@ -567,24 +700,48 @@ async function boot () {
       laneName: selected.name,
       captionsEnabled,
       duplexMode,
-      soundCues
+      soundCues,
+      displayMode
     }
   } catch (error) {
     state = { ...initialState(), session: 'error', detail: error?.message || String(error) }
   }
   render()
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(() => {})
+  if ('serviceWorker' in navigator) {
+    let refreshingForWorker = false
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (refreshingForWorker) return
+      refreshingForWorker = true
+      pendingWorkerRefresh = true
+      applyPendingWorkerRefresh()
+    })
+    navigator.serviceWorker.register('./sw.js', { scope: './', updateViaCache: 'none' })
+      .then((registration) => registration.update())
+      .catch(() => {})
+  }
 }
 
 elements.startButton.addEventListener('click', startCall)
+function setDrawer (open) {
+  elements.settingsDrawer.hidden = !open
+  elements.drawerToggle.setAttribute('aria-expanded', String(open))
+}
+elements.drawerToggle.addEventListener('click', () => setDrawer(elements.settingsDrawer.hidden))
+elements.drawerDismiss.addEventListener('click', () => setDrawer(false))
+document.addEventListener('pointerdown', (event) => {
+  if (elements.settingsDrawer.hidden) return
+  if (elements.settingsDrawer.contains(event.target) || elements.drawerToggle.contains(event.target)) return
+  setDrawer(false)
+})
 elements.laneSelect.addEventListener('change', () => {
   const option = elements.laneSelect.selectedOptions[0]
   if (!option) return
   if (option.value) localStorage.setItem('hermes-live-lane', option.value)
   else localStorage.removeItem('hermes-live-lane')
   switchLane(option.value, option.textContent)
+  setDrawer(false)
 })
-elements.orb.addEventListener('click', () => {
+function activateVoiceSurface () {
   if (['idle', 'error', 'ended'].includes(state.session)) void startCall()
   else if (state.session === 'live' && state.voice === 'assistant' && state.duplexMode === 'stable') {
     interruptUntil = performance.now() + 2600
@@ -593,17 +750,31 @@ elements.orb.addEventListener('click', () => {
     navigator.vibrate?.(12)
     showToast('Listening — go ahead')
   }
-})
-for (const input of elements.audioModes) {
-  input.addEventListener('change', () => {
-    if (!input.checked) return
-    localStorage.setItem('hermes-live-duplex', input.value)
-    dispatch({ type: 'duplex_mode', mode: input.value })
-  })
 }
+elements.orb.addEventListener('click', activateVoiceSurface)
+elements.highlightStack.addEventListener('click', activateVoiceSurface)
+elements.highlightStack.addEventListener('keydown', (event) => {
+  if (state.highlights.length || (event.key !== 'Enter' && event.key !== ' ')) return
+  event.preventDefault()
+  activateVoiceSurface()
+})
+elements.bargeIn.addEventListener('change', () => {
+  const mode = elements.bargeIn.checked ? 'natural' : 'stable'
+  localStorage.setItem('hermes-live-duplex', mode)
+  dispatch({ type: 'duplex_mode', mode })
+})
+elements.viewOrb.addEventListener('click', () => {
+  localStorage.setItem('mini-live-display', 'orb')
+  dispatch({ type: 'display_mode', mode: 'orb' })
+})
+elements.viewText.addEventListener('click', () => {
+  localStorage.setItem('mini-live-display', 'text')
+  dispatch({ type: 'display_mode', mode: 'text' })
+})
 elements.soundCues.addEventListener('change', () => {
   localStorage.setItem('hermes-live-sound-cues', elements.soundCues.checked ? 'on' : 'off')
   dispatch({ type: 'sound_cues', enabled: elements.soundCues.checked })
+  if (elements.soundCues.checked) void previewSoundCue()
 })
 elements.mute.addEventListener('click', toggleMute)
 elements.captions.addEventListener('click', () => {

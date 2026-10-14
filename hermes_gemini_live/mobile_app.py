@@ -38,6 +38,9 @@ _ASSETS = {
     "styles.css": "text/css",
     "sw.js": "application/javascript",
     "manifest.webmanifest": "application/manifest+json",
+    "fonts/source-serif-4.woff2": "font/woff2",
+    "fonts/inter.woff2": "font/woff2",
+    "fonts/jetbrains-mono.woff2": "font/woff2",
     "icons/icon-192.png": "image/png",
     "icons/icon-512.png": "image/png",
 }

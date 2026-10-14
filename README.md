@@ -122,24 +122,32 @@ when the app is backgrounded. Returning to the app shows **Tap to restore audio*
 is needed. A suspended or closed call does not resume its Gemini context or in-memory task board;
 already-submitted Hermes runs continue separately.
 
-The compact **Interrupt** toggle offers **Tap** and **Barge in** instead of guessing across
-incomparable microphone and speaker level scales. **Tap** suppresses microphone uplink while Gemini
-is speaking; tap the orb to interrupt intentionally. **Barge in** remains fully duplex and works
-best with headphones or quiet rooms. The selected mode is remembered locally.
+A small centered pull-down hint opens a compact top drawer containing **Barge in**, **Sound**, the
+Orb/Highlights selector, and the swim-lane picker. With Barge in off, microphone uplink pauses while
+Gemini is speaking and tapping the orb or Highlights interrupts intentionally. With it on, the call
+remains fully duplex and works best with headphones or quiet rooms. Sound enables the brief
+connection, approval, failure, and ending cues and plays a preview when turned on. Preferences are
+remembered locally. The warm dark background uses slow ambient color drift and animated grain;
+reduced-motion clients receive the same texture without continuous movement.
 
 The in-call **Captions** toggle renders Gemini Live's input and output transcription as two fading,
 speaker-labelled lines. Captions stay in page memory only, disappear after a few seconds, and are
-never stored by the service worker; the on/off preference is remembered locally. Unexpected socket
+never stored by the service worker; the on/off preference is remembered locally. The small
+**Orb / Highlights** icon toggle can replace the orb with a six-item bottom-up stack of distilled
+conversation topics. Highlight phrases are derived locally once per completed exchange from a
+longer rolling window of the same ephemeral transcription rather than mirroring each partial phrase.
+They grow brighter toward the newest item, fade upward, and are cleared at call, lane-switch, and
+reconnect boundaries; only the selected display mode is stored. Unexpected socket
 closures retry three times with a bounded delay. Each successful retry opens a fresh Gemini voice
 session in the same selected conversation mode; browser task/approval indicators from the dead relay are cleared,
-while already-submitted Hermes work continues separately. Optional quiet sound cues and restrained
-haptics cover connection, approval, failure, and ending.
+while already-submitted Hermes work continues separately.
 
 ### Topic swim lanes
 
-The bottom picker lists the skill-bound Telegram topics from `telegram.extra.group_topics` (for
-example **Garage**, **Garage — R129**, or **Personal Context**). Leaving it on **General conversation**
-opens the ordinary base Gemini Live session without lane context. A selected topic is resolved only
+The compact picker in the top drawer lists the skill-bound Telegram topics from
+`telegram.extra.group_topics` (for example **Garage**, **Garage — R129**, or **Personal Context**).
+Leaving it on **One-off chat** opens the ordinary base Gemini Live session without lane context; the
+current selection is shown beneath the call timer. A selected topic is resolved only
 on the server:
 
 1. its bound Hermes skill becomes a bounded, safety-aware voice brief; long skills retain marked

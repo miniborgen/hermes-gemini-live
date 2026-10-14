@@ -46,13 +46,110 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert 'id="lane-select"' in response.text
     assert 'id="captions-call"' in response.text
     assert 'id="live-caption"' in response.text
-    assert 'id="audio-mode"' in response.text
-    assert "Tap" in response.text
+    assert 'id="view-orb"' in response.text
+    assert 'id="view-text"' in response.text
+    assert 'id="highlight-stack"' in response.text
+    assert 'id="highlight-announcer"' in response.text
+    assert 'id="highlight-stack" class="highlight-stack" role="button" tabindex="0" aria-live=' not in response.text
+    assert '<section class="stage" aria-live=' not in response.text
+    assert 'id="status-label" aria-live="polite"' in response.text
+    assert 'id="barge-in"' in response.text
     assert "Barge in" in response.text
+    assert ">Interrupt<" not in response.text
     assert "Stable speaker" not in response.text
     assert "Natural barge-in" not in response.text
     assert 'id="sound-cues"' in response.text
+    assert 'id="drawer-toggle"' in response.text
+    assert 'id="settings-drawer"' in response.text
+    assert 'id="current-lane"' in response.text
+    assert 'class="call-meta"' in response.text
+    assert 'id="top-elapsed"' in response.text
+    assert 'id="top-lane"' in response.text
+    assert 'class="orb-glow"' in response.text
+    assert 'class="orb-disc"' in response.text
+    assert 'class="sigil-lobe' not in response.text
+    assert 'class="drawer-control-label"' in response.text
+    assert 'id="barge-state"' in response.text
+    assert 'id="sound-state"' in response.text
+    assert 'class="app-version"' in response.text
+    assert '>v28<' in response.text
+    assert 'drawer-hint-chip' not in response.text
+    assert '<span class="drawer-hint-label">Settings</span>' not in response.text
+    assert 'id="drawer-toggle" class="call-meta"' in response.text
+    assert 'id="drawer-dismiss"' in response.text
+    assert '<button id="drawer-toggle" class="drawer-hint' not in response.text
+    assert 'class="brand"' not in response.text
+    assert 'class="topbar-status"' not in response.text
+    assert "One-off chat" in response.text
+    assert response.text.count(" switch") >= 2
     assert 'rel="manifest"' in response.text
+
+    styles = client().get("/styles.css", headers=HEADERS).text
+    assert "grain-drift" in styles
+    assert "ambient-drift" in styles
+    assert 'font-family: "Source Serif 4"' in styles
+    assert 'font-family: "Inter"' in styles
+    assert 'font-family: "JetBrains Mono"' in styles
+    assert "url('./fonts/source-serif-4.woff2')" in styles
+    assert "url('./fonts/inter.woff2')" in styles
+    assert "url('./fonts/jetbrains-mono.woff2')" in styles
+    assert "baseFrequency='.38'" in styles
+    assert ".end-control .control-icon" in styles
+    assert "#app[data-display=\"text\"] .highlight-stack" in styles
+    assert ".call-meta" in styles
+    assert ".session-status" in styles
+    assert ".orb-glow" in styles
+    assert ".orb-disc" in styles
+    assert "linear-gradient(to bottom, transparent 0, #000 14%" in styles
+    assert "width: min(68vw, 270px)" in styles
+    assert "font-size: clamp(2.8rem, 12vw, 5.25rem)" in styles
+    assert "orb-soft-pulse" in styles
+    assert "sigil-bloom" not in styles
+    assert "background: transparent" in styles
+    assert "background: radial-gradient(circle at 42% 36%" in styles
+    assert ".session-status { position: absolute" in styles
+    assert ".button-primary { background: rgba(9,6,5,.08)" in styles
+    assert '.highlight-speaker::after { content: none;' in styles
+    assert '.highlight-item[data-speaker="user"] { padding-right: 28px;' in styles
+    assert '.highlight-item[data-speaker="assistant"] { padding-left: 28px;' in styles
+    assert '.highlight-item[data-speaker="user"] p { color: rgba(211,139,91,.78);' in styles
+    assert '.highlight-item[data-speaker="assistant"] p { color: rgba(240,229,219,.9);' in styles
+    assert '[data-display="text"] .session-status { bottom: calc(var(--bottom-reserve) - 34px);' in styles
+    assert '[data-display="text"] .status-copy h1 { color: rgba(229,217,207,.38); font-size: 13px;' in styles
+    assert 'align-items: center; gap: 10px;' in styles
+    assert '#app[data-session="idle"] .session-status { bottom: calc(var(--bottom-reserve) - 18px);' in styles
+    assert 'color: rgba(229,217,207,.38)' in styles
+    assert 'background: rgba(18,13,11,.34)' in styles
+    assert 'backdrop-filter: blur(30px) saturate(1.25)' in styles
+    assert '.drawer-lane-picker { width: min(100%, 330px); justify-self: center;' in styles
+    assert '.drawer-dismiss { justify-self: center;' in styles
+    assert '.call-meta { position: absolute; z-index: 3; top: 24px;' in styles
+    assert '[data-display="text"] .status-copy h1 { color: rgba(229,217,207,.38); font-size: 13px;' in styles
+    assert '[data-working="true"] .session-status { bottom: calc(var(--bottom-reserve) - 82px);' in styles
+    assert '[data-working="true"] .status-copy h1 { font-size: 24px;' in styles
+
+
+    app = client().get("/app.js", headers=HEADERS).text
+    assert "elements.highlightStack.setAttribute('role', state.highlights.length ? 'list' : 'button')" in app
+    assert "item.setAttribute('role', 'listitem')" in app
+    assert "elements.highlightStack.setAttribute('tabindex', state.highlights.length ? '-1' : '0')" in app
+    assert "setText(elements.topElapsed" in app
+    assert "setText(elements.topLane" in app
+    assert "setText(elements.bargeState, state.duplexMode === 'natural' ? 'Barging' : 'Stable')" in app
+    assert "setText(elements.soundState, state.soundCues ? 'Sound on' : 'Muted')" in app
+    assert "elements.captions.hidden = state.displayMode === 'text'" in app
+    assert "item.dataset.speaker = highlight.speaker" in app
+    assert "marker.textContent = highlight.speaker === 'assistant' ? 'M' : highlight.speaker === 'user' ? 'Y' : ''" in app
+    assert "Listening for the shape of the conversation" not in app
+    assert "document.addEventListener('pointerdown'" in app
+    assert "elements.drawerDismiss.addEventListener('click'" in app
+    assert "updateViaCache: 'none'" in app
+    assert "registration.update()" in app
+    assert "navigator.serviceWorker.addEventListener('controllerchange'" in app
+    assert "function applyPendingWorkerRefresh" in app
+    assert "pendingWorkerRefresh = true" in app
+    assert "if (['starting', 'live', 'reconnecting'].includes(state.session)) return" in app
+    assert "elements.liveCaption.replaceChildren()" in app
 
 
 def test_manifest_is_scoped_as_a_standalone_ios_pwa():
@@ -81,6 +178,18 @@ def test_service_worker_never_caches_api_or_relay_traffic():
     assert "request.url.includes('/lanes')" in response.text
     assert "cache: 'no-store'" in response.text
     assert client().get("/state.mjs", headers=HEADERS).headers["content-type"].startswith("application/javascript")
+
+
+def test_ride_brief_fonts_are_self_hosted_with_correct_content_types():
+    for path in (
+        "/fonts/source-serif-4.woff2",
+        "/fonts/inter.woff2",
+        "/fonts/jetbrains-mono.woff2",
+    ):
+        response = client().get(path, headers=HEADERS)
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("font/woff2")
+        assert response.headers["cache-control"] == "no-store"
 
 
 def test_status_reports_readiness_without_exposing_key_material(monkeypatch):
