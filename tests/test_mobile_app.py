@@ -46,9 +46,11 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert 'id="lane-select"' in response.text
     assert 'id="captions-call"' in response.text
     assert 'id="live-caption"' in response.text
-    assert 'id="view-orb"' in response.text
-    assert 'id="view-text"' in response.text
+    assert 'id="view-cycle"' in response.text
+    assert 'id="view-cycle-label"' in response.text
+    assert 'id="view-orb"' not in response.text
     assert 'id="highlight-stack"' in response.text
+    assert 'id="word-stream"' in response.text
     assert 'id="highlight-announcer"' in response.text
     assert 'id="highlight-stack" class="highlight-stack" role="button" tabindex="0" aria-live=' not in response.text
     assert '<section class="stage" aria-live=' not in response.text
@@ -74,7 +76,7 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert 'id="barge-state"' in response.text
     assert 'id="sound-state"' in response.text
     assert 'class="app-version"' in response.text
-    assert '>v30<' in response.text
+    assert '>v31<' in response.text
     assert 'drawer-hint-chip' not in response.text
     assert '<span class="drawer-hint-label">Settings</span>' not in response.text
     assert 'id="drawer-toggle" class="call-meta"' in response.text
@@ -139,7 +141,7 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert "setText(elements.topLane" in app
     assert "setText(elements.bargeState, state.duplexMode === 'natural' ? 'Barging' : 'Stable')" in app
     assert "setText(elements.soundState, state.soundCues ? 'Sound on' : 'Muted')" in app
-    assert "elements.captions.hidden = state.displayMode === 'text'" in app
+    assert "elements.captions.hidden = state.displayMode !== 'orb'" in app
     assert "item.dataset.speaker = highlight.speaker" in app
     assert "marker.textContent = highlight.speaker === 'assistant' ? 'M' : highlight.speaker === 'user' ? 'Y' : ''" in app
     assert "Listening for the shape of the conversation" not in app
@@ -152,6 +154,9 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert "pendingWorkerRefresh = true" in app
     assert "if (['starting', 'live', 'reconnecting'].includes(state.session)) return" in app
     assert "elements.liveCaption.replaceChildren()" in app
+    assert "streamWords: []" in app
+    assert "streamSources: { user: '', assistant: '' }" in app
+    assert "elements.wordStream.replaceChildren" in app
     assert "Notification.requestPermission()" in app
     assert "document.visibilityState === 'visible'" in app
     assert "registration.showNotification" in app

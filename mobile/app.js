@@ -16,8 +16,11 @@ const elements = {
   orb: document.querySelector('#orb'),
   highlightStack: document.querySelector('#highlight-stack'),
   highlightAnnouncer: document.querySelector('#highlight-announcer'),
-  viewOrb: document.querySelector('#view-orb'),
-  viewText: document.querySelector('#view-text'),
+  wordStream: document.querySelector('#word-stream'),
+  streamAnnouncer: document.querySelector('#stream-announcer'),
+  viewCycle: document.querySelector('#view-cycle'),
+  viewCycleIcon: document.querySelector('#view-cycle-icon'),
+  viewCycleLabel: document.querySelector('#view-cycle-label'),
   mute: document.querySelector('#mute-call'),
   captions: document.querySelector('#captions-call'),
   end: document.querySelector('#end-call'),
@@ -64,6 +67,7 @@ let intentionalClose = false
 let renderedHighlightKey = null
 let announcedHighlightKey = ''
 let renderedCaptionKey = null
+let renderedStreamKey = null
 let pendingWorkerRefresh = false
 const VOICES = new Set(['Aoede', 'Kore', 'Puck', 'Charon', 'Fenrir'])
 let callId = sessionStorage.getItem('mini-live-call-id') || crypto.randomUUID()
@@ -139,16 +143,21 @@ function render () {
   elements.highlightStack.setAttribute('tabindex', state.highlights.length ? '-1' : '0')
   elements.highlightStack.setAttribute('aria-label', state.highlights.length ? 'Conversation highlights' : (state.session === 'idle' ? 'Start voice call' : status.label))
   elements.highlightStack.removeAttribute('aria-description')
-  elements.orb.hidden = state.displayMode === 'text'
+  elements.orb.hidden = state.displayMode !== 'orb'
   elements.highlightStack.hidden = state.displayMode !== 'text'
-  elements.viewOrb.setAttribute('aria-pressed', String(state.displayMode === 'orb'))
-  elements.viewText.setAttribute('aria-pressed', String(state.displayMode === 'text'))
+  elements.wordStream.hidden = state.displayMode !== 'stream'
+  const displayNames = { orb: 'Orb', text: 'Flow', stream: 'Stream' }
+  const nextDisplays = { orb: 'Flow', text: 'Stream', stream: 'Orb' }
+  setText(elements.viewCycleLabel, displayNames[state.displayMode])
+  elements.viewCycleIcon.className = `view-icon view-icon-${state.displayMode === 'text' ? 'text' : state.displayMode}`
+  elements.viewCycleIcon.textContent = state.displayMode === 'stream' ? 'Aa' : ''
+  elements.viewCycle.setAttribute('aria-label', `Conversation display: ${displayNames[state.displayMode]}. Tap for ${nextDisplays[state.displayMode]}.`)
   elements.laneSelect.disabled = state.session === 'boot'
   elements.bargeIn.checked = state.duplexMode === 'natural'
   elements.soundCues.checked = state.soundCues
   setText(elements.bargeState, state.duplexMode === 'natural' ? 'Barging' : 'Stable')
   setText(elements.soundState, state.soundCues ? 'Sound on' : 'Muted')
-  elements.captions.hidden = state.displayMode === 'text'
+  elements.captions.hidden = state.displayMode !== 'orb'
   const captions = state.captionsEnabled ? state.captions : []
   const showCaptions = state.displayMode === 'orb' && captions.length > 0
   elements.liveCaption.hidden = !showCaptions
@@ -210,6 +219,24 @@ function render () {
         elements.highlightAnnouncer.textContent = latest.text
       }
     }
+  }
+
+  const streamKey = state.displayMode === 'stream'
+    ? JSON.stringify(state.streamWords.map((word) => [word.text, word.speaker, word.updatedAt]))
+    : 'hidden'
+  if (streamKey !== renderedStreamKey) {
+    renderedStreamKey = streamKey
+    const words = state.displayMode === 'stream' ? state.streamWords : []
+    elements.wordStream.replaceChildren(...words.map((word, index) => {
+      const item = document.createElement('span')
+      item.className = 'stream-word'
+      item.dataset.speaker = word.speaker
+      item.dataset.age = String(words.length - index - 1)
+      item.textContent = word.text
+      return item
+    }))
+    const latest = words.at(-1)
+    setText(elements.streamAnnouncer, latest ? `${latest.speaker === 'user' ? 'You' : 'Gemini'}: ${latest.text}` : '')
   }
 
   const approval = state.approvals[0]
@@ -522,6 +549,8 @@ function scheduleReconnect () {
       captions: [],
       highlights: [],
       highlightWindow: [],
+      streamWords: [],
+      streamSources: { user: '', assistant: '' },
       detail: 'The voice connection could not be restored. Your lane and preferences are still selected.'
     }
     emitFeedback('failed')
@@ -569,7 +598,17 @@ async function startCall () {
 
     connectSocket()
   } catch (error) {
-    state = { ...state, session: 'error', detail: error?.message || String(error) }
+    state = {
+      ...state,
+      session: 'error',
+      voice: 'listening',
+      captions: [],
+      highlights: [],
+      highlightWindow: [],
+      streamWords: [],
+      streamSources: { user: '', assistant: '' },
+      detail: error?.message || String(error)
+    }
     releaseResources(true)
     render()
   }
@@ -717,7 +756,8 @@ async function boot () {
     const captionsEnabled = localStorage.getItem('hermes-live-captions') === 'on'
     const duplexMode = localStorage.getItem('hermes-live-duplex') === 'natural' ? 'natural' : 'stable'
     const soundCues = localStorage.getItem('hermes-live-sound-cues') === 'on'
-    const displayMode = localStorage.getItem('mini-live-display') === 'text' ? 'text' : 'orb'
+    const storedDisplay = localStorage.getItem('mini-live-display')
+    const displayMode = ['text', 'stream'].includes(storedDisplay) ? storedDisplay : 'orb'
     const storedVoice = localStorage.getItem('mini-live-voice')
     selectedVoice = VOICES.has(storedVoice) ? storedVoice : 'Aoede'
     elements.voiceSelect.value = selectedVoice
@@ -796,13 +836,10 @@ elements.bargeIn.addEventListener('change', () => {
   localStorage.setItem('hermes-live-duplex', mode)
   dispatch({ type: 'duplex_mode', mode })
 })
-elements.viewOrb.addEventListener('click', () => {
-  localStorage.setItem('mini-live-display', 'orb')
-  dispatch({ type: 'display_mode', mode: 'orb' })
-})
-elements.viewText.addEventListener('click', () => {
-  localStorage.setItem('mini-live-display', 'text')
-  dispatch({ type: 'display_mode', mode: 'text' })
+elements.viewCycle.addEventListener('click', () => {
+  const next = state.displayMode === 'orb' ? 'text' : state.displayMode === 'text' ? 'stream' : 'orb'
+  localStorage.setItem('mini-live-display', next)
+  dispatch({ type: 'display_mode', mode: next })
 })
 elements.soundCues.addEventListener('change', () => {
   localStorage.setItem('hermes-live-sound-cues', elements.soundCues.checked ? 'on' : 'off')

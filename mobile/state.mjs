@@ -19,7 +19,9 @@ export function initialState () {
     captions: [],
     displayMode: 'orb',
     highlights: [],
-    highlightWindow: []
+    highlightWindow: [],
+    streamWords: [],
+    streamSources: { user: '', assistant: '' }
   }
 }
 
@@ -179,6 +181,22 @@ function captionsFrom (state, speaker, frame) {
   return [...state.captions, caption].slice(-2)
 }
 
+function streamWordsFrom (state, speaker, frame) {
+  const incoming = String(frame.text || '').replace(/\s+/g, ' ').trim()
+  if (!incoming) return { streamWords: state.streamWords, streamSources: state.streamSources }
+  const priorSource = String(state.streamSources[speaker] || '')
+  const tokenPattern = /[\p{L}\p{N}][\p{L}\p{N}'’-]*|[^\s\p{L}\p{N}]/gu
+  const priorTokens = priorSource.match(tokenPattern) || []
+  const nextTokens = incoming.match(tokenPattern) || []
+  let shared = 0
+  while (shared < priorTokens.length && shared < nextTokens.length && priorTokens[shared] === nextTokens[shared]) shared += 1
+  const additions = nextTokens.slice(shared).map((text, index) => ({ text, speaker, updatedAt: Number(frame.at || 0) + index }))
+  return {
+    streamWords: [...state.streamWords, ...additions].slice(-9),
+    streamSources: { ...state.streamSources, [speaker]: incoming }
+  }
+}
+
 export function reduceFrame (state, frame) {
   if (!frame || typeof frame.type !== 'string') return state
   switch (frame.type) {
@@ -196,6 +214,8 @@ export function reduceFrame (state, frame) {
         captions: [],
         highlights: [],
         highlightWindow: [],
+        streamWords: [],
+        streamSources: { user: '', assistant: '' },
         detail: ''
       }
     case 'mic_level':
@@ -210,13 +230,15 @@ export function reduceFrame (state, frame) {
         voice: 'thinking',
         detail: '',
         captions: captionsFrom(state, 'user', frame),
-        highlightWindow: highlightWindowFrom(state, 'user', frame)
+        highlightWindow: highlightWindowFrom(state, 'user', frame),
+        ...streamWordsFrom(state, 'user', frame)
       }
     case 'out_text':
       return {
         ...state,
         captions: captionsFrom(state, 'assistant', frame),
-        highlightWindow: highlightWindowFrom(state, 'assistant', frame)
+        highlightWindow: highlightWindowFrom(state, 'assistant', frame),
+        ...streamWordsFrom(state, 'assistant', frame)
       }
     case 'audio':
       return { ...state, voice: 'assistant', level: Math.max(0, Math.min(1, Number(frame.level) || state.level)) }
@@ -235,7 +257,7 @@ export function reduceFrame (state, frame) {
     case 'caption_clear':
       return { ...state, captions: [] }
     case 'display_mode':
-      return { ...state, displayMode: frame.mode === 'text' ? 'text' : 'orb' }
+      return { ...state, displayMode: ['text', 'stream'].includes(frame.mode) ? frame.mode : 'orb' }
     case 'lane_selected':
       return { ...state, selectedLane: String(frame.id || ''), laneName: String(frame.name || '') }
     case 'lane_switching':
@@ -253,7 +275,9 @@ export function reduceFrame (state, frame) {
         approvals: [],
         captions: [],
         highlights: [],
-        highlightWindow: []
+        highlightWindow: [],
+        streamWords: [],
+        streamSources: { user: '', assistant: '' }
       }
     case 'lane_context':
       return {
@@ -305,9 +329,9 @@ export function reduceFrame (state, frame) {
     case 'lane':
       return { ...state, lane: frame.status || 'unavailable', detail: String(frame.detail || '') }
     case 'go_away':
-      return { ...state, session: 'ended', voice: 'listening', pending: [], approvals: [], captions: [], highlights: [], highlightWindow: [], detail: 'Gemini ended this session. Start again to continue.' }
+      return { ...state, session: 'ended', voice: 'listening', pending: [], approvals: [], captions: [], highlights: [], highlightWindow: [], streamWords: [], streamSources: { user: '', assistant: '' }, detail: 'Gemini ended this session. Start again to continue.' }
     case 'error':
-      return { ...state, session: 'error', voice: 'listening', pending: [], approvals: [], captions: [], highlights: [], highlightWindow: [], detail: String(frame.detail || 'The voice call failed.') }
+      return { ...state, session: 'error', voice: 'listening', pending: [], approvals: [], captions: [], highlights: [], highlightWindow: [], streamWords: [], streamSources: { user: '', assistant: '' }, detail: String(frame.detail || 'The voice call failed.') }
     default:
       return state
   }

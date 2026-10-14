@@ -19,9 +19,11 @@
 
     <section id="settings-drawer" class="settings-drawer" aria-label="Conversation options" hidden>
       <div class="drawer-controls">
-        <div class="view-toggle" role="group" aria-label="Conversation display">
-          <button id="view-orb" type="button" aria-label="Orb view" aria-pressed="true"><span class="view-icon view-icon-orb" aria-hidden="true"></span><span class="drawer-control-label">Orb</span></button>
-          <button id="view-text" type="button" aria-label="Highlights view" aria-pressed="false"><span class="view-icon view-icon-text" aria-hidden="true"><i></i><i></i><i></i></span><span class="drawer-control-label">Flow</span></button>
+        <div class="view-toggle">
+          <button id="view-cycle" type="button" aria-label="Conversation display: Orb. Tap for Flow.">
+            <span id="view-cycle-icon" class="view-icon view-icon-orb" aria-hidden="true"></span>
+            <span id="view-cycle-label" class="drawer-control-label">Orb</span>
+          </button>
         </div>
         <label class="top-toggle" for="barge-in"><input id="barge-in" type="checkbox" switch aria-label="Barge in"><span id="barge-state" class="drawer-control-label">Stable</span></label>
         <label class="top-toggle" for="sound-cues"><input id="sound-cues" type="checkbox" switch aria-label="Sound"><span id="sound-state" class="drawer-control-label">Muted</span></label>
@@ -34,7 +36,7 @@
           <option value="">One-off chat</option>
         </select>
       </label>
-      <span class="app-version" aria-label="Mini Live version 30">v30</span>
+      <span class="app-version" aria-label="Mini Live version 31">v31</span>
       <button id="drawer-dismiss" class="drawer-dismiss" type="button" aria-label="Close conversation options"><span></span></button>
     </section>
 
@@ -50,6 +52,8 @@
       </button>
       <div id="highlight-stack" class="highlight-stack" role="button" tabindex="0" aria-label="Start voice call" hidden></div>
       <span id="highlight-announcer" class="sr-only" aria-live="polite" aria-atomic="true"></span>
+      <div id="word-stream" class="word-stream" aria-hidden="true" hidden></div>
+      <span id="stream-announcer" class="sr-only" aria-live="polite" aria-atomic="true"></span>
 
       <div class="status-copy session-status">
         <h1 id="status-label" aria-live="polite" aria-atomic="true">Preparing</h1>

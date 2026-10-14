@@ -174,6 +174,30 @@ test('streaming transcripts keep two ephemeral speaker-labelled caption lines', 
   assert.deepEqual(state.captions, [])
 })
 
+test('stream mode keeps a deduplicated rolling word trail for both speakers', () => {
+  let state = reduceFrame(initialState(), { type: 'display_mode', mode: 'stream' })
+  state = reduceFrame(state, { type: 'in_text', text: 'I am checking', at: 1000 })
+  state = reduceFrame(state, { type: 'in_text', text: 'I am checking the garage now', at: 1200 })
+
+  assert.equal(state.displayMode, 'stream')
+  assert.deepEqual(state.streamWords.map(item => item.text), ['I', 'am', 'checking', 'the', 'garage', 'now'])
+  assert.equal(state.streamWords.at(-1).speaker, 'user')
+
+  state = reduceFrame(state, { type: 'out_text', text: 'The next task is ready', at: 2000 })
+  assert.deepEqual(state.streamWords.slice(-5).map(item => item.text), ['The', 'next', 'task', 'is', 'ready'])
+  assert.equal(state.streamWords.at(-1).speaker, 'assistant')
+})
+
+test('stream mode retains only nine words and clears them at privacy boundaries', () => {
+  let state = reduceFrame(initialState(), { type: 'display_mode', mode: 'stream' })
+  state = reduceFrame(state, { type: 'in_text', text: 'one two three four five six seven eight nine ten eleven', at: 1000 })
+  assert.deepEqual(state.streamWords.map(item => item.text), ['three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven'])
+
+  state = reduceFrame(state, { type: 'reconnecting', attempt: 1 })
+  assert.deepEqual(state.streamWords, [])
+  assert.deepEqual(state.streamSources, { user: '', assistant: '' })
+})
+
 test('text mode distills live speech into a bottom-up ephemeral highlight stack', () => {
   assert.equal(
     conversationHighlight('Um, I think we should just check the oil pressure sensor wiring next.'),
