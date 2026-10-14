@@ -59,6 +59,7 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert "Stable speaker" not in response.text
     assert "Natural barge-in" not in response.text
     assert 'id="sound-cues"' in response.text
+    assert 'id="voice-select"' in response.text
     assert 'id="drawer-toggle"' in response.text
     assert 'id="settings-drawer"' in response.text
     assert 'id="current-lane"' in response.text
@@ -72,7 +73,7 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert 'id="barge-state"' in response.text
     assert 'id="sound-state"' in response.text
     assert 'class="app-version"' in response.text
-    assert '>v28<' in response.text
+    assert '>v29<' in response.text
     assert 'drawer-hint-chip' not in response.text
     assert '<span class="drawer-hint-label">Settings</span>' not in response.text
     assert 'id="drawer-toggle" class="call-meta"' in response.text
@@ -235,7 +236,7 @@ def test_relay_accepts_the_allowlisted_tailnet_user_and_runs_the_existing_relay(
     class Lane:
         id = "garage-r129"
 
-    async def fake_relay(ws, session_key=None, profile=None, voice_lane=None):
+    async def fake_relay(ws, session_key=None, profile=None, voice_lane=None, **kwargs):
         seen["lane"] = voice_lane
         await ws.send_json({"type": "ready", "lane": voice_lane.id})
 
@@ -251,7 +252,7 @@ def test_relay_accepts_the_allowlisted_tailnet_user_and_runs_the_existing_relay(
 def test_relay_without_a_lane_opens_a_regular_context_free_conversation(monkeypatch):
     seen = {}
 
-    async def fake_relay(ws, session_key=None, profile=None, voice_lane=None):
+    async def fake_relay(ws, session_key=None, profile=None, voice_lane=None, **kwargs):
         seen["lane"] = voice_lane
         await ws.send_json({"type": "ready"})
 

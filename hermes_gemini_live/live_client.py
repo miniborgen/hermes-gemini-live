@@ -60,19 +60,21 @@ class LiveSession:
 
     @classmethod
     async def open(cls, tools: list[dict] | None = None,
-                   instructions: str | None = None) -> "LiveSession":
+                   instructions: str | None = None, voice: str | None = None,
+                   resumption_handle: str | None = None) -> "LiveSession":
         try:
             key = config.resolve_key()
             model = config.model()
             plan = {
                 "model": model,
-                "voice": config.voice(),
+                "voice": voice or config.voice(),
                 "instructions": "\n\n".join(
                     value for value in (config.instructions(), (instructions or "").strip()) if value
                 ),
                 "thinking_level": config.thinking_level(model),
                 "activity": config.activity_detection(),
                 "tools": tools,
+                "resumption_handle": resumption_handle,
             }
         except config.ConfigError as exc:
             raise LiveError(str(exc)) from exc

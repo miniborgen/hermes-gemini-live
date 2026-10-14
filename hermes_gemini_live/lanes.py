@@ -344,7 +344,14 @@ def resolve_lane(lane_id: str | None) -> VoiceLane | None:
         "current facts, deeper retrieval, files, tools, research, or actions. Keep confirmed "
         "facts separate from hypotheses. Follow every safety, privacy, consent, and operating "
         "rule present in the bounded voice brief below. For delegated work, Hermes must load and "
-        f"follow the complete lane skill {row['skill']}."
+        f"follow the complete lane skill {row['skill']}. "
+        "Speak English by default. If the user is clearly speaking Swedish, switch naturally "
+        "to Swedish; English and Swedish are the only languages you may select automatically. "
+        "Use Spanish or any other language only when the user explicitly asks to switch. If "
+        "language is ambiguous, stay in the current language. When delegating longer work, "
+        "acknowledge it once and continue the conversation naturally without polling, repeating "
+        "the task, or ending every reply with a generic invitation. Return to queued results at "
+        "the next conversational opening."
     )
     skill_section = _voice_brief(skill_text, MAX_SKILL_CHARS)
     fixed = "\n\n".join([preamble, f"Lane voice brief:\n{skill_section}"])

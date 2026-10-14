@@ -106,11 +106,14 @@ button:focus-visible { outline: 2px solid #d5aa70; outline-offset: 4px; }
 .drawer-dismiss span { display: block; width: 28px; height: 3px; margin: auto; border-radius: 3px; background: rgba(224,212,202,.2); }
 .drawer-lane-picker { width: min(100%, 330px); justify-self: center; }
 .drawer-lane-picker select { min-height: 48px; border-radius: 16px; text-align: center; }
-.drawer-controls { display: grid; grid-template-columns: 1.35fr 1fr 1fr; align-items: stretch; gap: 10px; }
+.drawer-controls { display: grid; grid-template-columns: 1.35fr 1fr 1fr 1fr; align-items: stretch; gap: 10px; }
 .drawer-control-label { display: block; color: rgba(224, 212, 202, .78); font-size: 10px; font-weight: 600; line-height: 1; letter-spacing: .02em; white-space: nowrap; }
 .top-toggle { display: grid; min-height: 50px; place-items: center; align-content: center; gap: 7px; border: 1px solid rgba(255,255,255,.055); border-radius: 18px; background: rgba(255,255,255,.025); color: rgba(218, 207, 198, .76); }
 .top-toggle input { width: 40px; height: 24px; appearance: auto; margin: 0; accent-color: #a97848; touch-action: manipulation; }
 .top-toggle input:focus-visible { outline: 2px solid #d5aa70; outline-offset: 2px; }
+.voice-picker { display: grid; min-width: 0; min-height: 50px; place-items: center; align-content: center; gap: 3px; border: 1px solid rgba(255,255,255,.055); border-radius: 18px; background: rgba(255,255,255,.025); }
+.voice-icon { color: rgba(218,207,198,.72); font-size: 19px; line-height: 1; transform: rotate(-18deg); }
+.voice-picker select { width: 100%; border: 0; padding: 0 3px; background: transparent; color: rgba(224,212,202,.78); font: 9px/1.2 "Inter", sans-serif; text-align: center; }
 [data-session="live"] .connection-dot { background: #a88459; box-shadow: 0 0 12px rgba(196, 146, 84, .55); }
 [data-session="reconnecting"] .connection-dot { background: #b77745; box-shadow: 0 0 16px rgba(190, 107, 61, .7); animation: reconnect-pulse .9s ease-in-out infinite alternate; }
 

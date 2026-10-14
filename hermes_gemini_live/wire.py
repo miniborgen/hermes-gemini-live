@@ -25,7 +25,8 @@ def wire_model(model: str) -> str:
 def build_setup(*, model: str, voice: str, instructions: str,
                 thinking_level: str | None = None,
                 activity: dict | None = None,
-                tools: list[dict] | None = None) -> dict:
+                tools: list[dict] | None = None,
+                resumption_handle: str | None = None) -> dict:
     setup = {
         "model": wire_model(model),
         "generationConfig": {
@@ -35,7 +36,7 @@ def build_setup(*, model: str, voice: str, instructions: str,
         "systemInstruction": {"parts": [{"text": instructions}]},
         "inputAudioTranscription": {},
         "outputAudioTranscription": {},
-        "sessionResumption": {},
+        "sessionResumption": ({"handle": resumption_handle} if resumption_handle else {}),
         # Google owns the trim: it cuts at 80% of the context window toward half of
         # that, and never cuts the system instruction. Without it an audio-only session
         # hard-stops near 15 minutes.

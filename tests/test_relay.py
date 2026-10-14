@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import pytest
 from starlette.websockets import WebSocketDisconnect
@@ -94,9 +95,11 @@ def opened(monkeypatch):
 
         class Stub:
             @staticmethod
-            async def open(tools=None, instructions=None):
+            async def open(tools=None, instructions=None, voice=None, resumption_handle=None):
                 seen["tools"] = tools
                 seen["instructions"] = instructions
+                seen["voice"] = voice
+                seen["resumption_handle"] = resumption_handle
                 return live
 
         monkeypatch.setattr(relay, "LiveSession", Stub)
@@ -117,7 +120,7 @@ async def test_mic_and_type_frames_reach_the_live_socket(opened):
     await relay.run_relay(browser)
     assert live.audio_in == ["AAA="]
     assert live.text_in == ["hello"]
-    assert browser.sent[0] == {"type": "ready"}
+    assert browser.sent[0] == {"type": "ready", "resumed": False}
     assert live.closed is True
 
 
@@ -249,6 +252,70 @@ async def test_selected_voice_lane_prewarms_gemini_and_shapes_delegated_work(ope
     assert started[0][1] == "gemini-live:topic:68"
     assert started[0][0].startswith("Voice lane Garage — R129")
     assert "What should I work on next?" in started[0][0]
+
+
+@pytest.mark.asyncio
+async def test_reconnect_reuses_live_handle_and_call_board(opened, monkeypatch):
+    relay.clear_continuity()
+    relay.remember_continuity(
+        "call-1", handle="resume-1", book=agent_lane.RunBook(), notes=["queued answer"],
+        expires_at=time.monotonic() + 60,
+    )
+    live = opened(FakeLive(incoming=[]))
+
+    await relay.run_relay(FakeBrowser([]), continuity_key="call-1", voice="Kore")
+
+    assert opened.seen["voice"] == "Kore"
+    assert opened.seen["resumption_handle"] == "resume-1"
+
+
+@pytest.mark.asyncio
+async def test_resumption_updates_are_kept_server_side_not_sent_to_browser(opened):
+    relay.clear_continuity()
+    live = opened(FakeLive(incoming=[{
+        "sessionResumptionUpdate": {"newHandle": "resume-2", "resumable": True}
+    }]))
+    browser = FakeBrowser([])
+
+    await relay.run_relay(browser, continuity_key="call-2")
+
+    assert "resumption" not in types(browser)
+    assert relay.continuity_snapshot("call-2")["handle"] == "resume-2"
+
+
+@pytest.mark.asyncio
+async def test_rejected_resume_handle_retries_once_as_a_fresh_live_session(monkeypatch):
+    relay.clear_continuity()
+    relay.remember_continuity("call-retry", handle="expired", expires_at=time.monotonic() + 60)
+    fresh = FakeLive(incoming=[])
+    attempts = []
+
+    class Stub:
+        @staticmethod
+        async def open(tools=None, instructions=None, resumption_handle=None, **kwargs):
+            attempts.append(resumption_handle)
+            if resumption_handle:
+                raise LiveError("invalid session resumption handle")
+            return fresh
+
+    monkeypatch.setattr(relay, "LiveSession", Stub)
+    monkeypatch.setattr(relay.agent_lane, "probe", lambda *a, **k: (agent_lane.STATUS_OK, ""))
+
+    await relay.run_relay(FakeBrowser([]), continuity_key="call-retry")
+
+    assert attempts == ["expired", None]
+    assert relay.continuity_snapshot("call-retry")["handle"] == ""
+
+
+def test_new_generation_retires_prior_owner_for_the_same_call():
+    relay.clear_continuity()
+    first = relay.claim_continuity("same-call")
+    first_generation = first.generation
+    second = relay.claim_continuity("same-call")
+
+    assert first_generation + 1 == second.generation
+    assert relay.is_current_owner("same-call", first_generation) is False
+    assert relay.is_current_owner("same-call", second.generation) is True
 
 
 @pytest.mark.asyncio

@@ -27,6 +27,15 @@ def test_setup_carries_the_google_owned_trim():
     assert setup["setup"]["outputAudioTranscription"] == {}
 
 
+def test_setup_can_resume_a_live_session_handle():
+    setup = wire.build_setup(
+        model="gemini-3.8-live", voice="Aoede", instructions="continue",
+        resumption_handle="resume-123",
+    )
+
+    assert setup["setup"]["sessionResumption"] == {"handle": "resume-123"}
+
+
 def test_activity_lands_under_realtime_input_config_only_when_supplied():
     with_activity = wire.build_setup(
         model="gemini-3.8-live", voice="Puck", instructions="x",

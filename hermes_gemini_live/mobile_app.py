@@ -100,6 +100,10 @@ def create_app(*, allowed_login: str) -> FastAPI:
             await ws.close(code=4403)
             return
         lane_id = str(ws.query_params.get("lane") or "").strip()
+        continuity_key = str(ws.query_params.get("call") or "").strip()[:128] or None
+        voice = str(ws.query_params.get("voice") or "").strip()
+        if voice not in {"Aoede", "Kore", "Puck", "Charon", "Fenrir"}:
+            voice = None
         voice_lane = lanes.resolve_lane(lane_id) if lane_id else None
         if lane_id and voice_lane is None:
             await ws.close(code=4404)
@@ -111,6 +115,8 @@ def create_app(*, allowed_login: str) -> FastAPI:
                 session_key=config.api_server_session_key(),
                 profile=config.serving_profile(),
                 voice_lane=voice_lane,
+                continuity_key=continuity_key,
+                voice=voice,
             )
         except WebSocketDisconnect:
             pass

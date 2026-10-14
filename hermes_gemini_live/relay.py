@@ -16,6 +16,7 @@ import json
 import logging
 import time
 from collections import deque
+from dataclasses import dataclass, field
 from typing import Any
 
 from . import agent_lane, config, wire, tools as tools_module
@@ -47,6 +48,60 @@ NEEDS_NOTE = (
 #: result into the middle of its own speech makes it stop the sentence it was saying and read
 #: the report instead, which is what the user heard as being cut off.
 QUIET_BEFORE_NOTE_S = 1.0
+CONTINUITY_TTL_S = 300.0
+
+
+@dataclass
+class Continuity:
+    handle: str = ""
+    book: agent_lane.RunBook = field(default_factory=agent_lane.RunBook)
+    notes: list[str] = field(default_factory=list)
+    expires_at: float = 0.0
+    generation: int = 0
+
+
+_CONTINUITY: dict[str, Continuity] = {}
+
+
+def clear_continuity() -> None:
+    _CONTINUITY.clear()
+
+
+def remember_continuity(key: str, *, handle: str = "", book=None, notes=None,
+                        expires_at: float | None = None) -> Continuity:
+    entry = Continuity(
+        handle=handle, book=book or agent_lane.RunBook(), notes=list(notes or []),
+        expires_at=expires_at or (time.monotonic() + CONTINUITY_TTL_S),
+    )
+    _CONTINUITY[key] = entry
+    return entry
+
+
+def claim_continuity(key: str) -> Continuity:
+    entry = _continuity(key) or remember_continuity(key)
+    entry.generation += 1
+    entry.expires_at = time.monotonic() + CONTINUITY_TTL_S
+    return entry
+
+
+def is_current_owner(key: str | None, generation: int) -> bool:
+    entry = _continuity(key)
+    return bool(entry and entry.generation == generation)
+
+
+def _continuity(key: str | None) -> Continuity | None:
+    if not key:
+        return None
+    entry = _CONTINUITY.get(key)
+    if entry and entry.expires_at > time.monotonic():
+        return entry
+    _CONTINUITY.pop(key, None)
+    return None
+
+
+def continuity_snapshot(key: str) -> dict:
+    entry = _continuity(key)
+    return {"handle": entry.handle, "notes": list(entry.notes)} if entry else {}
 
 
 class NoteQueue:
@@ -57,12 +112,12 @@ class NoteQueue:
     an approval is urgent, because the run behind it is standing still.
     """
 
-    def __init__(self, live: LiveSession, clock=None) -> None:
+    def __init__(self, live: LiveSession, clock=None, notes=None) -> None:
         self._live = live
         # Injectable rather than patching ``time.monotonic``: that module is the event
         # loop's own clock, so a test that freezes it freezes asyncio with it.
         self._clock = clock or time.monotonic
-        self._notes: deque[str] = deque()
+        self._notes: deque[str] = deque(notes or [])
         self._spoken_at = 0.0
 
     def speaking(self) -> None:
@@ -74,6 +129,9 @@ class NoteQueue:
 
     def waiting(self) -> int:
         return len(self._notes)
+
+    def snapshot(self) -> list[str]:
+        return list(self._notes)
 
     async def release_quietly(self) -> bool:
         """Hand over one note if the model has stopped speaking. True when it did.
@@ -288,7 +346,8 @@ async def _release(notes: NoteQueue, task_id: str, why: str) -> None:
 async def _live_to_browser(browser: Any, live: LiveSession, note: dict,
                            book: agent_lane.RunBook, session_key: str | None,
                            profile: str | None, notes: NoteQueue,
-                           task_context: str = "") -> None:
+                           task_context: str = "", continuity: Continuity | None = None,
+                           continuity_key: str | None = None, generation: int = 0) -> None:
     while True:
         try:
             # The timeout is not a liveness check, it is the other half of the queue: a
@@ -299,6 +358,14 @@ async def _live_to_browser(browser: Any, live: LiveSession, note: dict,
             await notes.release_quietly()
             continue
         for frame in wire.browser_frames(raw):
+            if continuity_key and not is_current_owner(continuity_key, generation):
+                note["reason"] = "replaced by a newer connection"
+                return
+            if frame["type"] == "resumption":
+                if continuity is not None and frame.get("resumable") and frame.get("handle"):
+                    continuity.handle = frame["handle"]
+                    continuity.expires_at = time.monotonic() + CONTINUITY_TTL_S
+                continue
             if frame["type"] == "audio":
                 notes.speaking()
             await browser.send_text(_dump(frame))
@@ -349,7 +416,8 @@ def _dump(frame: dict) -> str:
 
 
 async def run_relay(browser: Any, session_key: str | None = None,
-                     profile: str | None = None, voice_lane: Any = None) -> None:
+                     profile: str | None = None, voice_lane: Any = None,
+                     continuity_key: str | None = None, voice: str | None = None) -> None:
     """Own the whole call. The caller has already accepted the upgrade."""
     note: dict = {"reason": ""}
     # The serving home decides the profile, not a query parameter a client could send:
@@ -369,18 +437,33 @@ async def run_relay(browser: Any, session_key: str | None = None,
     if not offer_tools:
         logger.warning("hermes-gemini-live: agent lane unavailable (%s: %s)",
                        lane_status, lane_detail)
+    continuity = claim_continuity(continuity_key) if continuity_key else None
+    generation = continuity.generation if continuity else 0
+    resumed = bool(continuity and continuity.handle)
     try:
-        live = await LiveSession.open(
-            tools_module.declarations() if offer_tools else None,
-            instructions=lane_instructions,
-        )
+        open_kwargs = {"instructions": lane_instructions}
+        if voice:
+            open_kwargs["voice"] = voice
+        if continuity and continuity.handle:
+            open_kwargs["resumption_handle"] = continuity.handle
+        try:
+            live = await LiveSession.open(
+                tools_module.declarations() if offer_tools else None, **open_kwargs)
+        except (LiveError, ConfigError):
+            if not (continuity and continuity.handle):
+                raise
+            continuity.handle = ""
+            open_kwargs.pop("resumption_handle", None)
+            live = await LiveSession.open(
+                tools_module.declarations() if offer_tools else None, **open_kwargs)
+            resumed = False
     except (LiveError, ConfigError) as exc:
         logger.warning("hermes-gemini-live: call refused: %s", exc)
         await browser.send_text(_dump({"type": "error", "detail": str(exc)}))
         return
     # LiveSession.open() consumes Gemini's setupComplete acknowledgement. The browser
     # needs an explicit readiness frame only after that handshake has really succeeded.
-    await browser.send_text(_dump({"type": "ready"}))
+    await browser.send_text(_dump({"type": "ready", "resumed": resumed}))
     if not offer_tools:
         await browser.send_text(_dump({"type": "lane", "status": lane_status,
                                        "detail": lane_detail}))
@@ -388,11 +471,12 @@ async def run_relay(browser: Any, session_key: str | None = None,
         await browser.send_text(_dump({"type": "lane_context", "id": voice_lane.id,
                                        "name": voice_lane.name}))
 
-    book = agent_lane.RunBook()
-    notes = NoteQueue(live)
+    book = continuity.book if continuity else agent_lane.RunBook()
+    notes = NoteQueue(live, notes=continuity.notes if continuity else None)
     up = asyncio.create_task(_browser_to_live(browser, live, note, book, session_key, profile))
     down = asyncio.create_task(_live_to_browser(browser, live, note, book, session_key,
-                                                profile, notes, task_context))
+                                                profile, notes, task_context, continuity,
+                                                continuity_key, generation))
     try:
         done, pending = await asyncio.wait({up, down}, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
@@ -424,6 +508,9 @@ async def run_relay(browser: Any, session_key: str | None = None,
             if task.done() and not task.cancelled():
                 task.exception()
         await live.close()
+        if continuity is not None and is_current_owner(continuity_key, generation):
+            continuity.notes = notes.snapshot()
+            continuity.expires_at = time.monotonic() + CONTINUITY_TTL_S
         if notes.waiting():
             # Queued and never spoken: the result is real, the user simply hung up first.
             logger.info("hermes-gemini-live: call ended with %d result(s) still queued",

@@ -33,6 +33,7 @@ const elements = {
   liveCaption: document.querySelector('#live-caption'),
   bargeIn: document.querySelector('#barge-in'),
   soundCues: document.querySelector('#sound-cues'),
+  voiceSelect: document.querySelector('#voice-select'),
   drawerToggle: document.querySelector('#drawer-toggle'),
   drawerDismiss: document.querySelector('#drawer-dismiss'),
   settingsDrawer: document.querySelector('#settings-drawer'),
@@ -62,6 +63,10 @@ let renderedHighlightKey = null
 let announcedHighlightKey = ''
 let renderedCaptionKey = null
 let pendingWorkerRefresh = false
+const VOICES = new Set(['Aoede', 'Kore', 'Puck', 'Charon', 'Fenrir'])
+let callId = sessionStorage.getItem('mini-live-call-id') || crypto.randomUUID()
+sessionStorage.setItem('mini-live-call-id', callId)
+let selectedVoice = 'Aoede'
 
 function applyPendingWorkerRefresh () {
   if (!pendingWorkerRefresh) return
@@ -414,8 +419,10 @@ function unlockAudio (context) {
 
 function socketUrl () {
   const url = new URL('./relay', window.location.href)
-  url.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
   if (state.selectedLane) url.searchParams.set('lane', state.selectedLane)
+  url.searchParams.set('call', callId)
+  url.searchParams.set('voice', selectedVoice)
   return url.toString()
 }
 
@@ -426,7 +433,7 @@ function receiveFrame (event) {
   if (frame.type === 'ready') {
     const resumedFresh = state.session === 'reconnecting'
     emitFeedback('connected')
-    if (resumedFresh) showToast('Reconnected — fresh voice session, same conversation mode')
+    if (resumedFresh) showToast(frame.resumed ? 'Resumed conversation' : 'Reconnected — continuity restored from Mini')
   }
 
   if (frame.type === 'audio' && frame.data) {
@@ -691,6 +698,9 @@ async function boot () {
     const duplexMode = localStorage.getItem('hermes-live-duplex') === 'natural' ? 'natural' : 'stable'
     const soundCues = localStorage.getItem('hermes-live-sound-cues') === 'on'
     const displayMode = localStorage.getItem('mini-live-display') === 'text' ? 'text' : 'orb'
+    const storedVoice = localStorage.getItem('mini-live-voice')
+    selectedVoice = VOICES.has(storedVoice) ? storedVoice : 'Aoede'
+    elements.voiceSelect.value = selectedVoice
     const selected = availableLanes.find((lane) => lane.id === remembered) || general
     elements.laneSelect.value = selected.id
     state = {
@@ -775,6 +785,19 @@ elements.soundCues.addEventListener('change', () => {
   localStorage.setItem('hermes-live-sound-cues', elements.soundCues.checked ? 'on' : 'off')
   dispatch({ type: 'sound_cues', enabled: elements.soundCues.checked })
   if (elements.soundCues.checked) void previewSoundCue()
+})
+elements.voiceSelect.addEventListener('change', () => {
+  const voice = VOICES.has(elements.voiceSelect.value) ? elements.voiceSelect.value : 'Aoede'
+  if (voice === selectedVoice) return
+  selectedVoice = voice
+  localStorage.setItem('mini-live-voice', voice)
+  if (['starting', 'live', 'reconnecting'].includes(state.session)) {
+    closeRelayConnection()
+    player?.flush()
+    dispatch({ type: 'reconnecting', attempt: 1 })
+    connectSocket()
+    showToast(`Switching to ${voice}`)
+  }
 })
 elements.mute.addEventListener('click', toggleMute)
 elements.captions.addEventListener('click', () => {

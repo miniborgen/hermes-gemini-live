@@ -70,6 +70,10 @@ def test_lanes_follow_telegram_topic_bindings_and_build_a_bounded_voice_brief(tm
     assert "Verify vehicle-specific facts before purchases" in lane.instructions
     assert "unrelated bank account detail" not in lane.instructions
     assert "answer directly from the lane context" in lane.instructions
+    assert "Speak English by default" in lane.instructions
+    assert "clearly speaking Swedish" in lane.instructions
+    assert "explicitly asks" in lane.instructions
+    assert "continue the conversation naturally" in lane.instructions
     assert len(lane.instructions) < 16000
     assert lane.session_key(None) == "gemini-live:chat:-1001:topic:68"
     assert lane.session_key("voice") == "voice:chat:-1001:topic:68"
