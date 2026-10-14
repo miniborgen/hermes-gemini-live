@@ -1,4 +1,4 @@
-const CACHE = 'mini-live-shell-v29'
+const CACHE = 'mini-live-shell-v30'
 const SHELL = ['./', './styles.css', './app.js', './state.mjs', './audio-worklet.js', './manifest.webmanifest', './fonts/source-serif-4.woff2', './fonts/inter.woff2', './fonts/jetbrains-mono.woff2', './icons/icon-192.png', './icons/icon-512.png']
 
 self.addEventListener('install', (event) => {
@@ -22,4 +22,14 @@ self.addEventListener('fetch', (event) => {
     caches.open(CACHE).then((cache) => cache.put(request, copy))
     return response
   })))
+})
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close()
+  const target = new URL(event.notification.data?.url || './', self.registration.scope).href
+  event.waitUntil(clients.matchAll({ type: 'window', includeUncontrolled: true }).then(async (windows) => {
+    const existing = windows.find((client) => client.url.startsWith(self.registration.scope))
+    if (existing) return existing.focus()
+    return clients.openWindow(target)
+  }))
 })

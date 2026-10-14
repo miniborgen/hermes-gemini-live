@@ -34,6 +34,8 @@ const elements = {
   bargeIn: document.querySelector('#barge-in'),
   soundCues: document.querySelector('#sound-cues'),
   voiceSelect: document.querySelector('#voice-select'),
+  notifications: document.querySelector('#notifications'),
+  notificationsState: document.querySelector('#notifications-state'),
   drawerToggle: document.querySelector('#drawer-toggle'),
   drawerDismiss: document.querySelector('#drawer-dismiss'),
   settingsDrawer: document.querySelector('#settings-drawer'),
@@ -67,6 +69,23 @@ const VOICES = new Set(['Aoede', 'Kore', 'Puck', 'Charon', 'Fenrir'])
 let callId = sessionStorage.getItem('mini-live-call-id') || crypto.randomUUID()
 sessionStorage.setItem('mini-live-call-id', callId)
 let selectedVoice = 'Aoede'
+let notificationsEnabled = false
+
+async function showTaskNotification (frame) {
+  if (!('Notification' in window) || !('serviceWorker' in navigator)) return
+  if (!notificationsEnabled || document.visibilityState === 'visible' || Notification.permission !== 'granted') return
+  try {
+    const registration = await navigator.serviceWorker.ready
+    if (typeof registration.showNotification !== 'function') return
+    const approval = frame.type === 'task_needs_input'
+    const playful = approval ? 'The tiny librarians hit a locked drawer.' : 'Discombobulation complete.'
+    const body = approval ? String(frame.question || 'A task needs your approval.') : String(frame.preview || 'I found something useful for you.')
+    await registration.showNotification(playful, {
+      body: body.slice(0, 180), icon: './icons/icon-192.png', badge: './icons/icon-192.png',
+      tag: `${frame.type}:${frame.id || ''}`, renotify: true, data: { url: './' }
+    })
+  } catch {}
+}
 
 function applyPendingWorkerRefresh () {
   if (!pendingWorkerRefresh) return
@@ -429,6 +448,7 @@ function socketUrl () {
 function receiveFrame (event) {
   let frame
   try { frame = JSON.parse(event.data) } catch { return }
+  if (frame.type === 'task_done' || frame.type === 'task_needs_input') void showTaskNotification(frame)
 
   if (frame.type === 'ready') {
     const resumedFresh = state.session === 'reconnecting'
@@ -701,6 +721,9 @@ async function boot () {
     const storedVoice = localStorage.getItem('mini-live-voice')
     selectedVoice = VOICES.has(storedVoice) ? storedVoice : 'Aoede'
     elements.voiceSelect.value = selectedVoice
+    notificationsEnabled = 'Notification' in window && localStorage.getItem('mini-live-notifications') === 'on' && Notification.permission === 'granted'
+    elements.notifications.checked = notificationsEnabled
+    setText(elements.notificationsState, notificationsEnabled ? 'Notify on' : 'Notify off')
     const selected = availableLanes.find((lane) => lane.id === remembered) || general
     elements.laneSelect.value = selected.id
     state = {
@@ -798,6 +821,25 @@ elements.voiceSelect.addEventListener('change', () => {
     connectSocket()
     showToast(`Switching to ${voice}`)
   }
+})
+elements.notifications.addEventListener('change', async () => {
+  if (!elements.notifications.checked) {
+    notificationsEnabled = false
+    localStorage.setItem('mini-live-notifications', 'off')
+    setText(elements.notificationsState, 'Notify off')
+    return
+  }
+  if (!('Notification' in window)) {
+    elements.notifications.checked = false
+    setText(elements.notificationsState, 'Unavailable')
+    return
+  }
+  const permission = await Notification.requestPermission()
+  notificationsEnabled = permission === 'granted'
+  elements.notifications.checked = notificationsEnabled
+  localStorage.setItem('mini-live-notifications', notificationsEnabled ? 'on' : 'off')
+  setText(elements.notificationsState, notificationsEnabled ? 'Notify on' : 'Blocked')
+  if (!notificationsEnabled) showToast('Notifications are blocked in iPhone settings.')
 })
 elements.mute.addEventListener('click', toggleMute)
 elements.captions.addEventListener('click', () => {

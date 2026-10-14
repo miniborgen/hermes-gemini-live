@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -322,12 +323,32 @@ def _make_finisher(notes: NoteQueue, browser: Any,
         async def deliver() -> None:
             notes.push(RESULT_NOTE.format(task_id=task_id, state=state, text=text or "no output"))
             await browser.send_text(_dump({"type": "task_done", "id": task_id,
-                                           "state": state}))
+                                           "state": state,
+                                           "preview": _result_preview(text)}))
             await _release(notes, task_id, "finished")
 
         _hand_off(deliver(), loop, task_id, "finished")
 
     return on_finished
+
+
+def _result_preview(text: str, limit: int = 180) -> str:
+    value = str(text or "").replace("```", " ")
+    value = re.sub(r"(?:/Users/|~/)[^\s;,]+", "[private path]", value)
+    value = re.sub(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b", "[private email]", value)
+    value = re.sub(r"\b(?:gh[pousr]_|sk-|AIza)[A-Za-z0-9_-]{12,}\b", "[private token]", value)
+    value = re.sub(r"https?://\S+", "[private link]", value)
+    value = re.sub(r"\b(?:token|secret|password|api[_ -]?key)\s*[:=]\s*\S+", "[private value]", value, flags=re.I)
+    lines = []
+    for line in value.splitlines():
+        clean = " ".join(line.split()).strip()
+        if not clean or clean.startswith(("/Users/", "~/", "file://")):
+            continue
+        lines.append(clean)
+        if sum(len(item) for item in lines) >= limit:
+            break
+    preview = " ".join(lines).strip()
+    return preview[:limit].rstrip() or "The tiny librarians came back empty-handed."
 
 
 async def _release(notes: NoteQueue, task_id: str, why: str) -> None:

@@ -60,6 +60,7 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert "Natural barge-in" not in response.text
     assert 'id="sound-cues"' in response.text
     assert 'id="voice-select"' in response.text
+    assert 'id="notifications"' in response.text
     assert 'id="drawer-toggle"' in response.text
     assert 'id="settings-drawer"' in response.text
     assert 'id="current-lane"' in response.text
@@ -73,7 +74,7 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert 'id="barge-state"' in response.text
     assert 'id="sound-state"' in response.text
     assert 'class="app-version"' in response.text
-    assert '>v29<' in response.text
+    assert '>v30<' in response.text
     assert 'drawer-hint-chip' not in response.text
     assert '<span class="drawer-hint-label">Settings</span>' not in response.text
     assert 'id="drawer-toggle" class="call-meta"' in response.text
@@ -151,6 +152,11 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert "pendingWorkerRefresh = true" in app
     assert "if (['starting', 'live', 'reconnecting'].includes(state.session)) return" in app
     assert "elements.liveCaption.replaceChildren()" in app
+    assert "Notification.requestPermission()" in app
+    assert "document.visibilityState === 'visible'" in app
+    assert "registration.showNotification" in app
+    assert "try {" in app and "catch {}" in app
+    assert "'Notification' in window" in app
 
 
 def test_manifest_is_scoped_as_a_standalone_ios_pwa():
@@ -178,6 +184,9 @@ def test_service_worker_never_caches_api_or_relay_traffic():
     assert "request.url.includes('/status')" in response.text
     assert "request.url.includes('/lanes')" in response.text
     assert "cache: 'no-store'" in response.text
+    assert "notificationclick" in response.text
+    assert "clients.matchAll" in response.text
+    assert "event.notification.data?.url" in response.text
     assert client().get("/state.mjs", headers=HEADERS).headers["content-type"].startswith("application/javascript")
 
 

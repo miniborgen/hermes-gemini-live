@@ -434,7 +434,35 @@ async def test_a_finished_run_crosses_back_onto_the_loop_as_a_spoken_note():
 
     assert any("Hermes finished task #task-9" in text and "4 files matched" in text
                for text in live.text_in)
-    assert {"type": "task_done", "id": "task-9", "state": "completed"} in browser.sent
+    assert {"type": "task_done", "id": "task-9", "state": "completed",
+            "preview": "4 files matched"} in browser.sent
+
+
+@pytest.mark.asyncio
+async def test_finished_run_sends_a_safe_useful_preview_for_background_notification():
+    live = FakeLive(end_after_script=False)
+    browser = FakeBrowser([])
+    finish = relay._make_finisher(relay.NoteQueue(live), browser, asyncio.get_running_loop())
+
+    finish("task-10", "completed", "The relay is healthy.\n/Users/private/secret.txt\n```raw```")
+    await asyncio.sleep(0.1)
+
+    frame = next(item for item in browser.sent if item["type"] == "task_done")
+    assert frame["preview"].startswith("The relay is healthy")
+    assert "/Users/" not in frame["preview"]
+    assert "```" not in frame["preview"]
+
+
+def test_notification_preview_redacts_inline_private_data():
+    preview = relay._result_preview(
+        "Found it at /Users/magnus/private.txt; email magnus@example.com; "
+        "token=ghp_abcdefghijklmnopqrstuvwxyz123456; https://example.com/?secret=yes"
+    )
+
+    assert "/Users/" not in preview
+    assert "magnus@example.com" not in preview
+    assert "ghp_" not in preview
+    assert "secret=yes" not in preview
 
 
 @pytest.mark.asyncio
@@ -451,7 +479,8 @@ async def test_a_result_that_lands_mid_sentence_waits_for_the_gap():
     await asyncio.sleep(0.05)
 
     assert live.text_in == [] and notes.waiting() == 1
-    assert {"type": "task_done", "id": "t1", "state": "completed"} in browser.sent
+    assert {"type": "task_done", "id": "t1", "state": "completed",
+            "preview": "4 files matched"} in browser.sent
 
     clock["now"] += relay.QUIET_BEFORE_NOTE_S + 0.1
     assert await notes.release_quietly() is True
