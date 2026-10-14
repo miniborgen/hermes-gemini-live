@@ -123,6 +123,7 @@ button:focus-visible { outline: 2px solid #d5aa70; outline-offset: 4px; }
 [data-session="idle"] .orb, [data-session="error"] .orb, [data-session="ended"] .orb { width: min(68vw, 270px); }
 .view-toggle { display: grid; min-height: 50px; padding: 3px; border: 1px solid rgba(255,255,255,.055); border-radius: 18px; background: rgba(255,255,255,.025); }
 .view-toggle button { display: grid; min-width: 0; place-items: center; align-content: center; gap: 5px; border: 0; border-radius: 15px; padding: 0 6px; background: transparent; color: rgba(237,223,211,.82); }
+.view-cycle-next { color: rgba(224,212,202,.28); font-size: 7px; line-height: 1; white-space: nowrap; }
 .view-toggle button[aria-pressed="true"] { background: rgba(255,255,255,.07); color: rgba(237,223,211,.92); box-shadow: inset 0 1px rgba(255,255,255,.04); }
 .view-icon-orb { width: 15px; height: 15px; border: 1px solid currentColor; border-radius: 50%; box-shadow: inset 0 0 0 4px rgba(201,154,100,.18), 0 0 12px currentColor; }
 .view-icon-text { display: grid; width: 18px; gap: 3px; }

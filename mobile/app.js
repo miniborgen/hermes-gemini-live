@@ -1,4 +1,4 @@
-import { feedbackCue, hasScheduledPlayback, initialState, isCurrentConnection, laneVisualToken, reconnectDelay, reduceFrame, shouldConnectAfterLaneSwitch, shouldTransmitMic, visibleStatus, workingLine } from './state.mjs'
+import { feedbackCue, hasScheduledPlayback, initialState, isCurrentConnection, laneVisualToken, nextDisplayMode, reconnectDelay, reduceFrame, shouldConnectAfterLaneSwitch, shouldTransmitMic, visibleStatus, workingLine } from './state.mjs'
 
 const SEND_RATE = 16000
 const SPEECH_ON = 0.055
@@ -21,6 +21,7 @@ const elements = {
   viewCycle: document.querySelector('#view-cycle'),
   viewCycleIcon: document.querySelector('#view-cycle-icon'),
   viewCycleLabel: document.querySelector('#view-cycle-label'),
+  viewCycleNext: document.querySelector('#view-cycle-next'),
   mute: document.querySelector('#mute-call'),
   captions: document.querySelector('#captions-call'),
   end: document.querySelector('#end-call'),
@@ -149,6 +150,7 @@ function render () {
   const displayNames = { orb: 'Orb', text: 'Flow', stream: 'Stream' }
   const nextDisplays = { orb: 'Flow', text: 'Stream', stream: 'Orb' }
   setText(elements.viewCycleLabel, displayNames[state.displayMode])
+  setText(elements.viewCycleNext, `Tap for ${nextDisplays[state.displayMode]}`)
   elements.viewCycleIcon.className = `view-icon view-icon-${state.displayMode === 'text' ? 'text' : state.displayMode}`
   elements.viewCycleIcon.textContent = state.displayMode === 'stream' ? 'Aa' : ''
   elements.viewCycle.setAttribute('aria-label', `Conversation display: ${displayNames[state.displayMode]}. Tap for ${nextDisplays[state.displayMode]}.`)
@@ -837,7 +839,7 @@ elements.bargeIn.addEventListener('change', () => {
   dispatch({ type: 'duplex_mode', mode })
 })
 elements.viewCycle.addEventListener('click', () => {
-  const next = state.displayMode === 'orb' ? 'text' : state.displayMode === 'text' ? 'stream' : 'orb'
+  const next = nextDisplayMode(state.displayMode)
   localStorage.setItem('mini-live-display', next)
   dispatch({ type: 'display_mode', mode: next })
 })

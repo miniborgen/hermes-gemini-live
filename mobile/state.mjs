@@ -50,6 +50,12 @@ export function reconnectDelay (attempt) {
   return Math.min(2000, 500 * (2 ** Math.max(0, Number(attempt || 1) - 1)))
 }
 
+export function nextDisplayMode (mode) {
+  if (mode === 'orb') return 'text'
+  if (mode === 'text') return 'stream'
+  return 'orb'
+}
+
 export function feedbackCue (kind) {
   const cues = {
     connected: { vibration: [12], frequency: 440, duration: 0.05 },

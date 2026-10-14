@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { conversationHighlight, feedbackCue, hasScheduledPlayback, initialState, isCurrentConnection, laneVisualToken, reconnectDelay, reduceFrame, shouldConnectAfterLaneSwitch, shouldTransmitMic, visibleStatus, workingLine } from '../mobile/state.mjs'
+import { conversationHighlight, feedbackCue, hasScheduledPlayback, initialState, isCurrentConnection, laneVisualToken, nextDisplayMode, reconnectDelay, reduceFrame, shouldConnectAfterLaneSwitch, shouldTransmitMic, visibleStatus, workingLine } from '../mobile/state.mjs'
 
 test('task frames maintain a per-task approval queue and exact ids', () => {
   let state = initialState()
@@ -196,6 +196,13 @@ test('stream mode retains only nine words and clears them at privacy boundaries'
   state = reduceFrame(state, { type: 'reconnecting', attempt: 1 })
   assert.deepEqual(state.streamWords, [])
   assert.deepEqual(state.streamSources, { user: '', assistant: '' })
+})
+
+test('display mode cycles orb to flow to stream and back to orb', () => {
+  assert.equal(nextDisplayMode('orb'), 'text')
+  assert.equal(nextDisplayMode('text'), 'stream')
+  assert.equal(nextDisplayMode('stream'), 'orb')
+  assert.equal(nextDisplayMode('unknown'), 'orb')
 })
 
 test('text mode distills live speech into a bottom-up ephemeral highlight stack', () => {

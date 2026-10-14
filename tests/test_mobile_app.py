@@ -48,6 +48,7 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert 'id="live-caption"' in response.text
     assert 'id="view-cycle"' in response.text
     assert 'id="view-cycle-label"' in response.text
+    assert 'id="view-cycle-next"' in response.text
     assert 'id="view-orb"' not in response.text
     assert 'id="highlight-stack"' in response.text
     assert 'id="word-stream"' in response.text
