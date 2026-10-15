@@ -52,6 +52,7 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert 'id="view-orb"' not in response.text
     assert 'id="highlight-stack"' in response.text
     assert 'id="word-stream"' in response.text
+
     assert 'id="highlight-announcer"' in response.text
     assert 'id="highlight-stack" class="highlight-stack" role="button" tabindex="0" aria-live=' not in response.text
     assert '<section class="stage" aria-live=' not in response.text
@@ -77,7 +78,7 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert 'id="barge-state"' in response.text
     assert 'id="sound-state"' in response.text
     assert 'class="app-version"' in response.text
-    assert '>v32<' in response.text
+    assert '>v33<' in response.text
     assert 'drawer-hint-chip' not in response.text
     assert '<span class="drawer-hint-label">Settings</span>' not in response.text
     assert 'id="drawer-toggle" class="call-meta"' in response.text
@@ -90,6 +91,10 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert 'rel="manifest"' in response.text
 
     styles = client().get("/styles.css", headers=HEADERS).text
+    assert '.word-stream { position: absolute;' in styles
+    assert 'top: 68%' in styles
+    assert 'translateX(calc(-50% - 22vw))' in styles
+    assert 'translateX(calc(-50% - 44vw))' in styles
     assert "grain-drift" in styles
     assert "ambient-drift" in styles
     assert 'font-family: "Source Serif 4"' in styles
