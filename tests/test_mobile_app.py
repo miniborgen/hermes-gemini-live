@@ -78,7 +78,7 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert 'id="barge-state"' in response.text
     assert 'id="sound-state"' in response.text
     assert 'class="app-version"' in response.text
-    assert '>v33<' in response.text
+    assert '>v34<' in response.text
     assert 'drawer-hint-chip' not in response.text
     assert '<span class="drawer-hint-label">Settings</span>' not in response.text
     assert 'id="drawer-toggle" class="call-meta"' in response.text
@@ -168,6 +168,15 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert "registration.showNotification" in app
     assert "try {" in app and "catch {}" in app
     assert "'Notification' in window" in app
+    assert "navigator.wakeLock.request('screen')" in app
+    assert "document.visibilityState !== 'visible'" in app
+    assert "function releaseWakeLock" in app
+    assert "syncWakeLock()" in app
+    assert "state = reduceFrame(state, frame)\n  syncWakeLock()" in app
+    assert "void requestWakeLock()" in app
+    assert "releaseWakeLock()" in app
+    assert "window.addEventListener('pagehide', handlePageHide)" in app
+    assert "window.addEventListener('pageshow', handlePageShow)" in app
 
 
 def test_manifest_is_scoped_as_a_standalone_ios_pwa():

@@ -75,6 +75,47 @@ let callId = sessionStorage.getItem('mini-live-call-id') || crypto.randomUUID()
 sessionStorage.setItem('mini-live-call-id', callId)
 let selectedVoice = 'Aoede'
 let notificationsEnabled = false
+let wakeLock = null
+
+function callNeedsWakeLock () {
+  return ['starting', 'live', 'reconnecting'].includes(state.session)
+}
+
+async function requestWakeLock () {
+  if (!callNeedsWakeLock() || document.visibilityState !== 'visible' || wakeLock || !navigator.wakeLock?.request) return
+  try {
+    const sentinel = await navigator.wakeLock.request('screen')
+    if (!callNeedsWakeLock() || document.visibilityState !== 'visible') {
+      await sentinel.release()
+      return
+    }
+    wakeLock = sentinel
+    sentinel.addEventListener('release', () => {
+      if (wakeLock === sentinel) wakeLock = null
+    }, { once: true })
+  } catch {}
+}
+
+function releaseWakeLock () {
+  const sentinel = wakeLock
+  wakeLock = null
+  if (sentinel) void sentinel.release().catch(() => {})
+}
+
+function syncWakeLock () {
+  if (callNeedsWakeLock() && document.visibilityState === 'visible') void requestWakeLock()
+  else releaseWakeLock()
+}
+
+function handlePageHide () {
+  releaseWakeLock()
+  checkAudioHealth()
+}
+
+function handlePageShow () {
+  syncWakeLock()
+  checkAudioHealth()
+}
 
 async function showTaskNotification (frame) {
   if (!('Notification' in window) || !('serviceWorker' in navigator)) return
@@ -101,6 +142,7 @@ function applyPendingWorkerRefresh () {
 
 function dispatch (frame) {
   state = reduceFrame(state, frame)
+  syncWakeLock()
   render()
 }
 
@@ -582,6 +624,7 @@ async function startCall () {
   }
   startedAt = Date.now()
   render()
+  void requestWakeLock()
 
   try {
     audioContext = new AudioContext()
@@ -649,6 +692,7 @@ function switchLane (id, name) {
 }
 
 function releaseResources (closeSocket = true) {
+  releaseWakeLock()
   window.clearTimeout(reconnectTimer)
   reconnectTimer = 0
   if (closeSocket) intentionalClose = true
@@ -675,6 +719,7 @@ function releaseResources (closeSocket = true) {
 }
 
 async function stopCall (setIdle = true) {
+  releaseWakeLock()
   if (setIdle && ['starting', 'live', 'reconnecting'].includes(state.session)) {
     const cue = feedbackCue('ended')
     if (cue.vibration.length) navigator.vibrate?.(cue.vibration)
@@ -890,9 +935,12 @@ elements.end.addEventListener('click', () => void stopCall())
 elements.approve.addEventListener('click', () => answerApproval('approve'))
 elements.deny.addEventListener('click', () => answerApproval('deny'))
 elements.restoreAudio.addEventListener('click', restoreAudio)
-document.addEventListener('visibilitychange', checkAudioHealth)
-window.addEventListener('pagehide', checkAudioHealth)
-window.addEventListener('pageshow', checkAudioHealth)
+document.addEventListener('visibilitychange', () => {
+  syncWakeLock()
+  checkAudioHealth()
+})
+window.addEventListener('pagehide', handlePageHide)
+window.addEventListener('pageshow', handlePageShow)
 
 render()
 renderFrame = window.requestAnimationFrame(animationLoop)
