@@ -1,4 +1,4 @@
-const CACHE = 'mini-live-shell-v64'
+const CACHE = 'mini-live-shell-v65'
 const SHELL = ['./', './styles.css', './app.js', './state.mjs', './presence-webgl.mjs', './audio-worklet.js', './manifest.webmanifest', './fonts/source-serif-4.woff2', './fonts/inter.woff2', './fonts/jetbrains-mono.woff2', './icons/icon-192.png', './icons/icon-512.png']
 
 self.addEventListener('install', (event) => {
@@ -15,6 +15,14 @@ self.addEventListener('fetch', (event) => {
   const request = event.request
   if (request.method !== 'GET' || request.url.includes('/relay') || request.url.includes('/api/') || request.url.includes('/health') || request.url.includes('/status') || request.url.includes('/lanes')) {
     event.respondWith(fetch(request, { cache: 'no-store' }))
+    return
+  }
+  if (request.mode === 'navigate') {
+    event.respondWith(fetch(request, { cache: 'no-store' }).then((response) => {
+      const copy = response.clone()
+      caches.open(CACHE).then((cache) => cache.put('./', copy))
+      return response
+    }).catch(() => caches.match('./')))
     return
   }
   event.respondWith(caches.match(request).then((cached) => cached || fetch(request).then((response) => {

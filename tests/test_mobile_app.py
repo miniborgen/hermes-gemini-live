@@ -103,7 +103,7 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert 'id="barge-state"' in response.text
     assert 'id="sound-state"' in response.text
     assert 'class="app-version"' in response.text
-    assert '>v64<' in response.text
+    assert '>v65<' in response.text
     assert 'drawer-hint-chip' not in response.text
     assert '<span class="drawer-hint-label">Settings</span>' not in response.text
     assert 'id="drawer-toggle" class="call-meta"' in response.text
