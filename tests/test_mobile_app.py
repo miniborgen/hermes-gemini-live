@@ -15,6 +15,22 @@ def client() -> TestClient:
     return TestClient(create_app(allowed_login=LOGIN))
 
 
+def test_status_reports_web_push_unavailable_until_server_keys_are_configured(monkeypatch):
+    monkeypatch.setattr(mobile_app.config, "status_dict", lambda: {"ok": True})
+    response = client().get("/status", headers=HEADERS)
+    assert response.json()["push"] is False
+
+
+def test_mute_and_spoken_welcome_behavior_are_wired_into_the_browser_shell():
+    app_script = client().get("/app.js", headers=HEADERS).text
+    assert "player?.setMuted(state.muted)" in app_script
+    assert "gain.gain.setValueAtTime(muted ? 0 : 1" in app_script
+    assert "localStorage.setItem('hermes-live-captions', 'on')" in app_script
+    assert "Captions stay on while voice is muted" in app_script
+    assert "type: 'text', text: welcomeText" in app_script
+    assert "if (!state.muted && socket?.readyState === WebSocket.OPEN)" in app_script
+
+
 def test_health_reports_ready_for_the_allowed_tailnet_identity():
     response = client().get("/health", headers=HEADERS)
 
@@ -41,6 +57,7 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert "Mini Live" in response.text
     assert "Hermes Live" not in response.text
     assert 'id="orb"' in response.text
+    assert 'id="presence-canvas"' in response.text
     assert 'id="start-call"' in response.text
     assert 'id="approval-sheet"' in response.text
     assert 'id="lane-select"' in response.text
@@ -56,6 +73,8 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert 'id="highlight-announcer"' in response.text
     assert 'id="highlight-stack" class="highlight-stack" role="button" tabindex="0" aria-live=' not in response.text
     assert '<section class="stage" aria-live=' not in response.text
+    assert 'class="status-copy orb-status"' in response.text
+    assert '<div class="status-copy session-status">' not in response.text
     assert 'id="status-label" aria-live="polite"' in response.text
     assert 'id="barge-in"' in response.text
     assert "Barge in" in response.text
@@ -71,14 +90,20 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert 'class="call-meta"' in response.text
     assert 'id="top-elapsed"' in response.text
     assert 'id="top-lane"' in response.text
+    assert 'id="elapsed" class="elapsed sr-only">0:00</span>' in response.text
     assert 'class="orb-glow"' in response.text
+    assert 'id="top-working-status" class="top-working-status" hidden' in response.text
+    assert 'id="top-working-text"' in response.text
+    assert response.text.index('id="live-caption"') < response.text.index('id="call-controls"')
+    assert 'class="control-icon mute-icon"' in response.text
+    assert 'class="control-icon voice-mute-icon"' in response.text
     assert 'class="orb-disc"' in response.text
     assert 'class="sigil-lobe' not in response.text
     assert 'class="drawer-control-label"' in response.text
     assert 'id="barge-state"' in response.text
     assert 'id="sound-state"' in response.text
     assert 'class="app-version"' in response.text
-    assert '>v34<' in response.text
+    assert '>v63<' in response.text
     assert 'drawer-hint-chip' not in response.text
     assert '<span class="drawer-hint-label">Settings</span>' not in response.text
     assert 'id="drawer-toggle" class="call-meta"' in response.text
@@ -88,14 +113,41 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert 'class="topbar-status"' not in response.text
     assert "One-off chat" in response.text
     assert response.text.count(" switch") >= 2
+    app_script = client().get("/app.js", headers=HEADERS).text
+    assert "url.searchParams.set('call', `${callId}:lane:${conversationScope}`)" in app_script
+    assert "const conversationScope = state.selectedLane || 'one-off'" in app_script
+    assert "frame.welcome === 'resumed'" in app_script
+    assert "Hey, I’m back." in app_script
+    assert "Hey, what can we do?" in app_script
+    assert "frame.statusText = frame.welcome === 'resumed' ? 'Conversation resumed' : 'Session ready'" in app_script
+    assert "const showCaptions = captions.length > 0" in app_script
+    assert "caption.speaker === 'user' ? 'You' : 'Mini'" in app_script
+    assert "elements.captions.querySelector('span:last-child').textContent = 'Captions'" in app_script
+    assert "Captions on" not in app_script
+    assert "caption.speaker === 'user' ? 'You' : 'Gemini'" not in app_script
+    assert "state.displayMode === 'orb' && captions.length > 0" not in app_script
+    assert "showToast(welcomeText)" not in app_script
+    assert "url.searchParams.set('conversation', callId)" in app_script
     assert 'rel="manifest"' in response.text
 
     styles = client().get("/styles.css", headers=HEADERS).text
     assert '.word-stream { position: absolute;' in styles
+    assert '.word-stream-user { top: 31%;' in styles
+    assert '.word-stream-assistant { top: 68%;' in styles
+    assert '.word-stream-lane { position: absolute; left: 50%; width: 100%;' in styles
     assert 'top: 68%' in styles
     assert 'translateX(calc(-50% - 22vw))' in styles
     assert 'translateX(calc(-50% - 44vw))' in styles
-    assert "grain-drift" in styles
+    assert 'font-size: clamp(24px, 7vw, 38px)' in styles
+    assert '.stream-word[data-age="0"] { animation:' not in styles
+    assert '@keyframes stream-exit' not in styles
+    assert '[data-stream-complete="true"] .stream-word' in styles
+    assert '@keyframes stream-finish' in styles
+    assert 'height: 100%;' in styles
+    assert '#app[data-session="idle"] .session-status { bottom: 62px;' in styles
+    assert '#app[data-session="idle"] .status-copy h1' in styles and 'font-size: 15px' in styles
+    assert '#app[data-session="idle"] .status-copy p' in styles and 'font-size: 11px' in styles
+    assert '[data-working="true"] .status-copy p { display: inline-flex; align-items: center;' in styles
     assert "ambient-drift" in styles
     assert 'font-family: "Source Serif 4"' in styles
     assert 'font-family: "Inter"' in styles
@@ -114,10 +166,22 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert "width: min(68vw, 270px)" in styles
     assert "font-size: clamp(2.8rem, 12vw, 5.25rem)" in styles
     assert "orb-soft-pulse" in styles
+    assert '[data-session="live"][data-voice="assistant"] .orb { filter: saturate(1.32) brightness(1.16);' in styles
+    assert '[data-session="live"][data-voice="assistant"] .orb-glow { opacity: calc(.82 + var(--level, 0) * .18);' in styles
+    assert '[data-session="live"][data-voice="assistant"] .orb-disc { filter: brightness(1.42) saturate(1.24);' in styles
+    assert "task-orbit-title" in styles
+    assert "task-orbit-meta" in styles
+    assert "task-halo-arrive" in styles
+    assert "task-orbit-complete" in styles
+    assert "text-overflow: ellipsis" not in styles[styles.index('.task-orbit-text'):styles.index('.task-orbit-item[data-state=\"completed\"]')]
     assert "sigil-bloom" not in styles
     assert "background: transparent" in styles
     assert "background: radial-gradient(circle at 42% 36%" in styles
-    assert ".session-status { position: absolute" in styles
+    assert '.live-caption { position: relative; z-index: 7;' in styles
+    assert 'width: min(100%, 520px)' in styles
+    assert 'margin: 0 auto 2px' in styles
+    assert 'background: rgba(9,5,4,.16)' in styles
+    assert '.session-status { position: absolute' in styles
     assert ".button-primary { background: rgba(9,6,5,.08)" in styles
     assert '.highlight-speaker::after { content: none;' in styles
     assert '.highlight-item[data-speaker="user"] { padding-right: 28px;' in styles
@@ -127,7 +191,7 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert '[data-display="text"] .session-status { bottom: calc(var(--bottom-reserve) - 34px);' in styles
     assert '[data-display="text"] .status-copy h1 { color: rgba(229,217,207,.38); font-size: 13px;' in styles
     assert 'align-items: center; gap: 10px;' in styles
-    assert '#app[data-session="idle"] .session-status { bottom: calc(var(--bottom-reserve) - 18px);' in styles
+    assert '#app[data-session="idle"] .session-status { bottom: 62px;' in styles
     assert 'color: rgba(229,217,207,.38)' in styles
     assert 'background: rgba(18,13,11,.34)' in styles
     assert 'backdrop-filter: blur(30px) saturate(1.25)' in styles
@@ -137,13 +201,34 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert '[data-display="text"] .status-copy h1 { color: rgba(229,217,207,.38); font-size: 13px;' in styles
     assert '[data-working="true"] .session-status { bottom: calc(var(--bottom-reserve) - 82px);' in styles
     assert '[data-working="true"] .status-copy h1 { font-size: 24px;' in styles
+    assert '#app[data-session="live"][data-working="false"] .orb-status h1' in styles
+    assert '[data-working="true"] .elapsed { display: none;' in styles
+    assert '.top-working-status { position: absolute;' in styles
+    assert '.top-working-spinner { width: 10px;' in styles
+    assert '.orb-status { position: absolute;' in styles
+    assert '.session-status { position: absolute; width: 1px; height: 1px;' in styles
+    assert '[data-display="orb"][data-working="true"] .session-status h1 { visibility: hidden;' in styles
+    assert '.control-icon { display: inline-flex;' in styles
+    assert '.mute-icon { transform: translateY(-.25px);' in styles
+    assert '.voice-mute-icon { transform: translateX(.75px);' in styles
+    assert '.round-control { display: flex;' in styles and 'background: rgba(9,6,5,.015)' in styles
+    assert '.round-control .control-label { white-space: nowrap;' in styles
+    assert '.end-control { border-color: rgba(207,101,85,.06);' in styles
+    assert 'animation: task-label-breathe 2.8s ease-in-out infinite;' in styles
+    assert 'animation: task-dot-pulse 1.7s ease-in-out infinite;' in styles
+    assert 'animation: task-text-drift 2.8s ease-in-out infinite;' in styles
+    assert '@keyframes task-dot-pulse' in styles
 
 
     app = client().get("/app.js", headers=HEADERS).text
     assert "elements.highlightStack.setAttribute('role', state.highlights.length ? 'list' : 'button')" in app
+    assert "createPresenceRenderer" in app
+    assert "naturalSpeechGate(naturalGate" in app
     assert "item.setAttribute('role', 'listitem')" in app
     assert "elements.highlightStack.setAttribute('tabindex', state.highlights.length ? '-1' : '0')" in app
     assert "setText(elements.topElapsed" in app
+    assert "elements.topWorkingStatus.hidden = state.pending.length === 0" in app
+    assert "'Working on one task for you'" in app
     assert "setText(elements.topLane" in app
     assert "setText(elements.bargeState, state.duplexMode === 'natural' ? 'Barging' : 'Stable')" in app
     assert "setText(elements.soundState, state.soundCues ? 'Sound on' : 'Muted')" in app
@@ -172,7 +257,7 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert "document.visibilityState !== 'visible'" in app
     assert "function releaseWakeLock" in app
     assert "syncWakeLock()" in app
-    assert "state = reduceFrame(state, frame)\n  syncWakeLock()" in app
+    assert "state = reduceFrame(state, frame)\n  player?.setMuted(state.muted)\n  syncWakeLock()" in app
     assert "void requestWakeLock()" in app
     assert "releaseWakeLock()" in app
     assert "window.addEventListener('pagehide', handlePageHide)" in app

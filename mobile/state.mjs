@@ -4,8 +4,12 @@ export function initialState () {
     voice: 'listening',
     level: 0,
     muted: false,
+    micMuted: false,
+    outputMuted: false,
+    outputGain: 1,
     detail: '',
     pending: [],
+    tasks: [],
     approvals: [],
     reconnectAttempt: 0,
     elapsed: 0,
@@ -13,7 +17,7 @@ export function initialState () {
     selectedLane: null,
     laneName: '',
     activeLane: null,
-    duplexMode: 'stable',
+    duplexMode: 'natural',
     soundCues: false,
     captionsEnabled: false,
     captions: [],
@@ -21,7 +25,9 @@ export function initialState () {
     highlights: [],
     highlightWindow: [],
     streamWords: [],
-    streamSources: { user: '', assistant: '' }
+    streamWordsBySpeaker: { user: [], assistant: [] },
+    streamSources: { user: '', assistant: '' },
+    streamComplete: false
   }
 }
 
@@ -66,8 +72,124 @@ export function feedbackCue (kind) {
   return cues[kind] || { vibration: [], frequency: 0, duration: 0 }
 }
 
-export function shouldTransmitMic ({ mode, assistantSpeaking, interrupting = false }) {
-  return mode !== 'stable' || !assistantSpeaking || interrupting
+export function naturalSpeechGate (gate = {}, { peak, now, assistantSpeaking = false }) {
+  const level = Math.max(0, Number(peak) || 0)
+  const at = Math.max(0, Number(now) || 0)
+  const priorFloor = Math.max(0.004, Number(gate.noiseFloor) || 0.012)
+  const noiseFloor = gate.active || level > priorFloor * 2.2
+    ? priorFloor
+    : Math.max(0.004, Math.min(0.04, priorFloor * 0.94 + level * 0.06))
+  const onsetThreshold = Math.max(assistantSpeaking ? 0.032 : 0.024, noiseFloor * (assistantSpeaking ? 2.7 : 2.1))
+  const releaseThreshold = Math.max(0.01, noiseFloor * 1.35)
+  let onsetAt = Number(gate.onsetAt) || 0
+  let lastAboveAt = Number(gate.lastAboveAt) || 0
+  let active = Boolean(gate.active)
+  if (level >= onsetThreshold) {
+    if (!onsetAt) onsetAt = at
+    lastAboveAt = at
+    if (at - onsetAt >= (assistantSpeaking ? 120 : 70)) active = true
+  } else if (!active) {
+    onsetAt = 0
+  }
+  if (active && level >= releaseThreshold) lastAboveAt = at
+  if (active && at - lastAboveAt > 360) {
+    active = false
+    onsetAt = 0
+  }
+  return { speaking: active, gate: { active, onsetAt, lastAboveAt, noiseFloor } }
+}
+
+export function shouldTransmitMic ({ mode, assistantSpeaking, interrupting = false, micMuted = false }) {
+  return !micMuted && (mode !== 'stable' || !assistantSpeaking || interrupting)
+}
+
+const ACTIVE_TASK_STATES = new Set(['submitting', 'working', 'needs_input'])
+
+function safeTaskText (value, limit = 96) {
+  return String(value || '')
+    .replace(/```/g, ' ')
+    .replace(/(?:\/Users\/|~\/)[^\s;,]+/g, 'private path')
+    .replace(/\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/g, 'private email')
+    .replace(/\b(?:gh[pousr]_|sk-|AIza)[A-Za-z0-9_-]{8,}\b/g, 'private token')
+    .replace(/https?:\/\/\S+/g, 'private link')
+    .replace(/\b(?:token|secret|password|api[_ -]?key)\s*[:=]\s*\S+/gi, 'private value')
+    .replace(/\s+/g, ' ').trim().slice(0, limit)
+}
+
+export function taskTitle (value) {
+  return safeTaskText(value).replace(/[.?!]+$/, '') || 'Delegated task'
+}
+
+function updateTask (state, id, changes, frame = {}) {
+  const now = Number(frame.at || Date.now())
+  const current = state.tasks.find(item => item.id === id)
+  const task = {
+    id,
+    title: taskTitle(frame.title || frame.prompt || current?.title),
+    state: 'working',
+    startedAt: Number(frame.startedAt || current?.startedAt || now),
+    updatedAt: Number(frame.updatedAt || now),
+    laneId: String(frame.laneId ?? current?.laneId ?? state.activeLane ?? state.selectedLane ?? ''),
+    laneName: safeTaskText(frame.laneName ?? current?.laneName ?? state.laneName ?? '', 64),
+    question: safeTaskText(frame.question ?? current?.question ?? '', 180),
+    preview: safeTaskText(frame.preview ?? current?.preview ?? '', 180),
+    ...changes
+  }
+  return current ? state.tasks.map(item => item.id === id ? task : item) : [...state.tasks, task]
+}
+
+export function taskCards (tasks, { now = Date.now(), expanded = false } = {}) {
+  const ordered = [...tasks].sort((a, b) => Number(b.updatedAt) - Number(a.updatedAt))
+  const visible = expanded ? ordered : ordered.slice(0, ordered.length > 3 ? 2 : 3)
+  const cards = visible.map(task => ({
+    ...task,
+    elapsedSeconds: Math.max(0, Math.floor(((ACTIVE_TASK_STATES.has(task.state) ? now : task.updatedAt) - task.startedAt) / 1000))
+  }))
+  cards.more = expanded ? 0 : Math.max(0, ordered.length - visible.length)
+  return cards
+}
+
+function shortTaskTitle (value) {
+  const title = taskTitle(value)
+  const lower = title.toLowerCase()
+  const noun = lower.includes('calendar') ? 'calendar' : ''
+  if (/^schedule\b/.test(lower)) return ['Schedule', noun, 'event'].filter(Boolean).join(' ')
+  if (/^add\b/.test(lower) && noun) return 'Add calendar event'
+  if (/^check\b/.test(lower)) {
+    const object = lower.includes('history') ? 'history' : lower.includes('routine') ? 'routine' : ''
+    return ['Check', noun, object].filter(Boolean).join(' ')
+  }
+  const words = title.match(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu) || []
+  return words.slice(0, 4).join(' ') || 'Delegated task'
+}
+
+function taskVisualNumber (id, salt) {
+  const text = `${id}:${salt}`
+  let hash = 2166136261
+  for (const character of text) {
+    hash ^= character.codePointAt(0)
+    hash = Math.imul(hash, 16777619)
+  }
+  return hash >>> 0
+}
+
+export function radialTaskCards (tasks, { now = Date.now() } = {}) {
+  const ordered = [...tasks]
+    .sort((a, b) => Number(b.updatedAt) - Number(a.updatedAt))
+  const active = ordered
+    .filter(task => ACTIVE_TASK_STATES.has(task.state))
+  const recentTerminal = ordered
+    .filter(task => !ACTIVE_TASK_STATES.has(task.state))
+    .slice(0, Math.max(0, 3 - active.length))
+  return [...active.slice(0, 3), ...recentTerminal]
+    .slice(0, 3)
+    .map(task => ({
+      ...task,
+      shortTitle: shortTaskTitle(task.title),
+      orbSize: 7 + (taskVisualNumber(task.id, 'size') % 7),
+      driftSeconds: 18 + (taskVisualNumber(task.id, 'drift') % 13),
+      elapsedSeconds: Math.max(0, Math.floor(((ACTIVE_TASK_STATES.has(task.state) ? now : task.updatedAt) - task.startedAt) / 1000))
+    }))
 }
 
 export function hasScheduledPlayback ({ liveCount, scheduledUntil, currentTime }) {
@@ -189,16 +311,40 @@ function captionsFrom (state, speaker, frame) {
 
 function streamWordsFrom (state, speaker, frame) {
   const incoming = String(frame.text || '').replace(/\s+/g, ' ').trim()
-  if (!incoming) return { streamWords: state.streamWords, streamSources: state.streamSources }
+  if (!incoming) return { streamWords: state.streamWords, streamWordsBySpeaker: state.streamWordsBySpeaker, streamSources: state.streamSources }
   const priorSource = String(state.streamSources[speaker] || '')
   const tokenPattern = /[\p{L}\p{N}][\p{L}\p{N}'’-]*|[^\s\p{L}\p{N}]/gu
   const priorTokens = priorSource.match(tokenPattern) || []
   const nextTokens = incoming.match(tokenPattern) || []
   let shared = 0
   while (shared < priorTokens.length && shared < nextTokens.length && priorTokens[shared] === nextTokens[shared]) shared += 1
-  const additions = nextTokens.slice(shared).map((text, index) => ({ text, speaker, updatedAt: Number(frame.at || 0) + index }))
+  const at = Number(frame.at || 0)
+  const speakerWords = state.streamWordsBySpeaker[speaker] || []
+  const priorAt = Number(speakerWords.at(-1)?.updatedAt || 0)
+  const withinSegment = priorTokens.length && at - priorAt < 2500
+  const looksChunked = withinSegment && !state.streamComplete && shared === 0 && nextTokens.length <= 3 && !incoming.startsWith(priorSource)
+  if (looksChunked) {
+    const chunk = nextTokens.map((text, index) => ({ text, speaker, updatedAt: at + index }))
+    return {
+      streamWords: [...state.streamWords, ...chunk].slice(-18),
+      streamWordsBySpeaker: { ...state.streamWordsBySpeaker, [speaker]: [...speakerWords, ...chunk].slice(-9) },
+      streamSources: { ...state.streamSources, [speaker]: `${priorSource} ${incoming}`.replace(/\s+/g, ' ').trim() }
+    }
+  }
+  const additions = nextTokens.slice(shared).map((text, index) => ({ text, speaker, updatedAt: at + index }))
+  const startsNewSegment = Boolean(priorTokens.length && at - priorAt >= 2500)
+  if (startsNewSegment) {
+    const segment = nextTokens.map((text, index) => ({ text, speaker, updatedAt: at + index }))
+    return {
+      streamWords: [...state.streamWords, ...segment].slice(-18),
+      streamWordsBySpeaker: { ...state.streamWordsBySpeaker, [speaker]: segment.slice(-9) },
+      streamSources: { ...state.streamSources, [speaker]: incoming }
+    }
+  }
+  const material = additions.length ? additions : nextTokens.map((text, index) => ({ text, speaker, updatedAt: at + index }))
   return {
-    streamWords: [...state.streamWords, ...additions].slice(-9),
+    streamWords: [...state.streamWords, ...material].slice(-18),
+    streamWordsBySpeaker: { ...state.streamWordsBySpeaker, [speaker]: [...speakerWords, ...material].slice(-9) },
     streamSources: { ...state.streamSources, [speaker]: incoming }
   }
 }
@@ -207,8 +353,9 @@ export function reduceFrame (state, frame) {
   if (!frame || typeof frame.type !== 'string') return state
   switch (frame.type) {
     case 'socket_open':
-    case 'ready':
       return { ...state, session: 'live', voice: 'listening', detail: '', reconnectAttempt: 0 }
+    case 'ready':
+      return { ...state, session: 'live', voice: 'listening', detail: frame.statusText || '', reconnectAttempt: 0 }
     case 'reconnecting':
       return {
         ...state,
@@ -221,7 +368,9 @@ export function reduceFrame (state, frame) {
         highlights: [],
         highlightWindow: [],
         streamWords: [],
+        streamWordsBySpeaker: { user: [], assistant: [] },
         streamSources: { user: '', assistant: '' },
+        streamComplete: false,
         detail: ''
       }
     case 'mic_level':
@@ -234,6 +383,7 @@ export function reduceFrame (state, frame) {
       return {
         ...state,
         voice: 'thinking',
+        streamComplete: false,
         detail: '',
         captions: captionsFrom(state, 'user', frame),
         highlightWindow: highlightWindowFrom(state, 'user', frame),
@@ -242,6 +392,7 @@ export function reduceFrame (state, frame) {
     case 'out_text':
       return {
         ...state,
+        streamComplete: false,
         captions: captionsFrom(state, 'assistant', frame),
         highlightWindow: highlightWindowFrom(state, 'assistant', frame),
         ...streamWordsFrom(state, 'assistant', frame)
@@ -251,9 +402,18 @@ export function reduceFrame (state, frame) {
     case 'speech_started':
       return { ...state, voice: 'listening', level: 0 }
     case 'turn_complete':
-      return { ...state, voice: 'listening', level: 0, ...commitHighlightWindow(state) }
+      return { ...state, voice: 'listening', level: 0, streamComplete: state.streamWords.length > 0, ...commitHighlightWindow(state) }
     case 'mute':
-      return { ...state, muted: Boolean(frame.muted) }
+    case 'output_mute':
+      return {
+        ...state,
+        muted: Boolean(frame.muted),
+        outputMuted: Boolean(frame.muted),
+        outputGain: frame.muted ? 0 : 1,
+        captionsEnabled: frame.muted ? true : state.captionsEnabled
+      }
+    case 'mic_mute':
+      return { ...state, micMuted: Boolean(frame.muted) }
     case 'duplex_mode':
       return { ...state, duplexMode: frame.mode === 'natural' ? 'natural' : 'stable' }
     case 'sound_cues':
@@ -283,7 +443,9 @@ export function reduceFrame (state, frame) {
         highlights: [],
         highlightWindow: [],
         streamWords: [],
-        streamSources: { user: '', assistant: '' }
+        streamWordsBySpeaker: { user: [], assistant: [] },
+        streamSources: { user: '', assistant: '' },
+        streamComplete: false
       }
     case 'lane_context':
       return {
@@ -292,8 +454,20 @@ export function reduceFrame (state, frame) {
         laneName: String(frame.name || state.laneName || ''),
         detail: ''
       }
-    case 'task_started':
-      return { ...state, pending: uniqueAdd(state.pending, String(frame.id || '')) }
+    case 'task_snapshot': {
+      const tasks = Array.isArray(frame.tasks) ? frame.tasks : []
+      return tasks.reduce((next, item) => {
+        const id = String(item.id || '')
+        if (!id) return next
+        const records = updateTask(next, id, { state: String(item.state || 'working') }, item)
+        return { ...next, tasks: records }
+      }, { ...state, tasks: [], pending: tasks.filter(item => ACTIVE_TASK_STATES.has(item.state)).map(item => String(item.id)) })
+    }
+    case 'task_started': {
+      const id = String(frame.id || '')
+      if (!id) return state
+      return { ...state, pending: uniqueAdd(state.pending, id), tasks: updateTask(state, id, { state: 'working' }, frame) }
+    }
     case 'task_needs_input': {
       const id = String(frame.id || '')
       if (!id) return state
@@ -302,6 +476,7 @@ export function reduceFrame (state, frame) {
       return {
         ...state,
         pending: uniqueAdd(state.pending, id),
+        tasks: updateTask(state, id, { state: 'needs_input' }, frame),
         approvals: current
           ? state.approvals.map((item) => item.id === id ? approval : item)
           : [...state.approvals, approval]
@@ -318,6 +493,7 @@ export function reduceFrame (state, frame) {
       return {
         ...state,
         pending: endsTask ? without(state.pending, id) : state.pending,
+        tasks: updateTask(state, id, { state: endsTask ? 'cancelled' : 'working', question: '' }, frame),
         approvals: state.approvals.filter((item) => item.id !== id),
         detail: ''
       }
@@ -327,17 +503,28 @@ export function reduceFrame (state, frame) {
       return {
         ...state,
         pending: without(state.pending, id),
+        tasks: updateTask(state, id, { state: String(frame.state || 'completed'), question: '' }, frame),
         approvals: state.approvals.filter((item) => item.id !== id)
       }
     }
-    case 'task_failed':
-      return { ...state, detail: String(frame.detail || 'Hermes could not complete that action.') }
+    case 'task_failed': {
+      const id = String(frame.id || '')
+      return {
+        ...state,
+        pending: without(state.pending, id),
+        tasks: id ? updateTask(state, id, { state: 'failed', question: '' }, frame) : state.tasks,
+        approvals: state.approvals.filter(item => item.id !== id),
+        detail: String(frame.detail || 'Hermes could not complete that action.')
+      }
+    }
     case 'lane':
       return { ...state, lane: frame.status || 'unavailable', detail: String(frame.detail || '') }
+    case 'reconnect_exhausted':
+      return { ...state, session: 'ended', voice: 'listening', pending: [], approvals: [], captions: [], highlights: [], highlightWindow: [], streamWords: [], streamWordsBySpeaker: { user: [], assistant: [] }, streamSources: { user: '', assistant: '' }, streamComplete: false, detail: String(frame.detail || 'The voice connection could not be restored. Your lane and preferences are still selected.') }
     case 'go_away':
-      return { ...state, session: 'ended', voice: 'listening', pending: [], approvals: [], captions: [], highlights: [], highlightWindow: [], streamWords: [], streamSources: { user: '', assistant: '' }, detail: 'Gemini ended this session. Start again to continue.' }
+      return { ...state, session: 'ended', voice: 'listening', pending: [], approvals: [], captions: [], highlights: [], highlightWindow: [], streamWords: [], streamWordsBySpeaker: { user: [], assistant: [] }, streamSources: { user: '', assistant: '' }, streamComplete: false, detail: 'Gemini ended this session. Start again to continue.' }
     case 'error':
-      return { ...state, session: 'error', voice: 'listening', pending: [], approvals: [], captions: [], highlights: [], highlightWindow: [], streamWords: [], streamSources: { user: '', assistant: '' }, detail: String(frame.detail || 'The voice call failed.') }
+      return { ...state, session: 'error', voice: 'listening', pending: [], approvals: [], captions: [], highlights: [], highlightWindow: [], streamWords: [], streamWordsBySpeaker: { user: [], assistant: [] }, streamSources: { user: '', assistant: '' }, streamComplete: false, detail: String(frame.detail || 'The voice call failed.') }
     default:
       return state
   }
@@ -359,7 +546,7 @@ export function visibleStatus (state) {
   if (state.muted) return { label: 'Muted', detail: 'The call and delegated tasks remain active' }
   if (state.voice === 'user') return { label: 'Listening', detail: 'You are speaking' }
   if (state.session === 'idle') return { label: 'Ready', detail: state.selectedLane ? 'Start when you are ready' : 'Start a one-off conversation' }
-  return { label: 'Listening', detail: '' }
+  return { label: 'Listening', detail: state.detail || '' }
 }
 
 const WORKING_LINES = [

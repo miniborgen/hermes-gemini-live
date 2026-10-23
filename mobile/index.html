@@ -37,7 +37,9 @@
           <option value="">One-off chat</option>
         </select>
       </label>
-      <span class="app-version" aria-label="Mini Live version 34">v34</span>
+      <span id="notification-diagnostics" class="notification-diagnostics">Permission: unknown · Installed: unknown</span>
+      <button id="test-notification" class="diagnostic-button" type="button">Send test notification</button>
+      <span class="app-version" aria-label="Mini Live version 63">v63</span>
       <button id="drawer-dismiss" class="drawer-dismiss" type="button" aria-label="Close conversation options"><span></span></button>
     </section>
 
@@ -46,23 +48,29 @@
         <span id="top-elapsed" class="top-elapsed">0:00</span>
         <span id="top-lane" class="top-lane">One-off chat</span>
       </button>
+      <div id="top-working-status" class="top-working-status" hidden><span class="top-working-spinner" aria-hidden="true"></span><span id="top-working-text"></span></div>
       <button id="orb" class="orb" type="button" aria-label="Start voice call">
+        <canvas id="presence-canvas" class="presence-canvas ember-organism" aria-hidden="true"></canvas>
         <span class="orb-glow" aria-hidden="true"></span>
         <span class="orb-disc" aria-hidden="true"></span>
+        <span id="task-rings" class="task-rings" aria-hidden="true"></span>
         <span id="task-embers" class="task-embers" aria-hidden="true"></span>
       </button>
+      <div class="status-copy orb-status">
+        <h1 id="status-label" aria-live="polite" aria-atomic="true">Preparing</h1>
+        <p id="status-detail">Checking the private voice relay…</p>
+      </div>
       <div id="highlight-stack" class="highlight-stack" role="button" tabindex="0" aria-label="Start voice call" hidden></div>
       <span id="highlight-announcer" class="sr-only" aria-live="polite" aria-atomic="true"></span>
       <div id="word-stream" class="word-stream" aria-hidden="true" hidden></div>
       <span id="stream-announcer" class="sr-only" aria-live="polite" aria-atomic="true"></span>
 
-      <div class="status-copy session-status">
-        <h1 id="status-label" aria-live="polite" aria-atomic="true">Preparing</h1>
-        <p id="status-detail">Checking the private voice relay…</p>
+      <div class="session-status">
         <span id="elapsed" class="elapsed sr-only">0:00</span>
         <span id="current-lane" class="current-lane sr-only">One-off chat</span>
       </div>
-      <div id="live-caption" class="live-caption" aria-live="polite" aria-atomic="false" hidden></div>
+      <div id="task-cards" class="task-cards" role="list" aria-label="Delegated tasks" hidden></div>
+      <button id="task-more" class="task-more" type="button" hidden></button>
     </section>
 
     <section id="approval-sheet" class="approval-sheet" aria-labelledby="approval-title" hidden>
@@ -77,13 +85,17 @@
     </section>
 
     <div class="bottom-stack">
+      <div id="live-caption" class="live-caption" aria-live="polite" aria-atomic="false" hidden></div>
       <section id="start-panel" class="start-panel">
         <button id="start-call" class="button button-primary button-large" type="button" disabled>Start voice</button>
       </section>
 
       <nav id="call-controls" class="call-controls" aria-label="Call controls" hidden>
         <button id="mute-call" class="round-control" type="button" aria-pressed="false">
-          <span class="control-icon" aria-hidden="true">◉</span><span>Mute</span>
+          <span class="control-icon mute-icon" aria-hidden="true">◉</span><span>Mic mute</span>
+        </button>
+        <button id="speaker-mute-call" class="round-control" type="button" aria-pressed="false">
+          <span class="control-icon voice-mute-icon" aria-hidden="true">◖</span><span class="control-label">Voice mute</span>
         </button>
         <button id="captions-call" class="round-control" type="button" aria-pressed="false">
           <span class="control-icon caption-icon" aria-hidden="true">CC</span><span>Captions</span>

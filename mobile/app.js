@@ -1,4 +1,5 @@
-import { feedbackCue, hasScheduledPlayback, initialState, isCurrentConnection, laneVisualToken, nextDisplayMode, reconnectDelay, reduceFrame, shouldConnectAfterLaneSwitch, shouldTransmitMic, visibleStatus, workingLine } from './state.mjs'
+import { feedbackCue, hasScheduledPlayback, initialState, isCurrentConnection, laneVisualToken, naturalSpeechGate, nextDisplayMode, radialTaskCards, reconnectDelay, reduceFrame, shouldConnectAfterLaneSwitch, shouldTransmitMic, taskCards, visibleStatus, workingLine } from './state.mjs'
+import { createPresenceRenderer } from './presence-webgl.mjs'
 
 const SEND_RATE = 16000
 const SPEECH_ON = 0.055
@@ -8,12 +9,16 @@ const elements = {
   app: document.querySelector('#app'),
   statusLabel: document.querySelector('#status-label'),
   statusDetail: document.querySelector('#status-detail'),
+  presenceCanvas: document.querySelector('#presence-canvas'),
   currentLane: document.querySelector('#current-lane'),
   elapsed: document.querySelector('#elapsed'),
   startButton: document.querySelector('#start-call'),
   startPanel: document.querySelector('#start-panel'),
   controls: document.querySelector('#call-controls'),
+  topWorkingStatus: document.querySelector('#top-working-status'),
+  topWorkingText: document.querySelector('#top-working-text'),
   orb: document.querySelector('#orb'),
+
   highlightStack: document.querySelector('#highlight-stack'),
   highlightAnnouncer: document.querySelector('#highlight-announcer'),
   wordStream: document.querySelector('#word-stream'),
@@ -23,6 +28,10 @@ const elements = {
   viewCycleLabel: document.querySelector('#view-cycle-label'),
   viewCycleNext: document.querySelector('#view-cycle-next'),
   mute: document.querySelector('#mute-call'),
+  speakerMute: document.querySelector('#speaker-mute-call'),
+  taskRings: document.querySelector('#task-rings'),
+  taskCards: document.querySelector('#task-cards'),
+  taskMore: document.querySelector('#task-more'),
   captions: document.querySelector('#captions-call'),
   end: document.querySelector('#end-call'),
   approvalSheet: document.querySelector('#approval-sheet'),
@@ -40,6 +49,8 @@ const elements = {
   voiceSelect: document.querySelector('#voice-select'),
   notifications: document.querySelector('#notifications'),
   notificationsState: document.querySelector('#notifications-state'),
+  notificationDiagnostics: document.querySelector('#notification-diagnostics'),
+  testNotification: document.querySelector('#test-notification'),
   drawerToggle: document.querySelector('#drawer-toggle'),
   drawerDismiss: document.querySelector('#drawer-dismiss'),
   settingsDrawer: document.querySelector('#settings-drawer'),
@@ -50,6 +61,9 @@ const elements = {
 }
 
 let state = initialState()
+const presence = createPresenceRenderer(elements.presenceCanvas, {
+  reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches
+})
 let socket = null
 let audioContext = null
 let mediaStream = null
@@ -60,6 +74,7 @@ let player = null
 let startedAt = 0
 let renderFrame = 0
 let lastMicAbove = 0
+let naturalGate = { active: false, onsetAt: 0, lastAboveAt: 0, noiseFloor: 0.012 }
 let toastTimer = 0
 let captionTimer = 0
 let interruptUntil = 0
@@ -76,6 +91,8 @@ sessionStorage.setItem('mini-live-call-id', callId)
 let selectedVoice = 'Aoede'
 let notificationsEnabled = false
 let wakeLock = null
+let tasksExpanded = false
+
 
 function callNeedsWakeLock () {
   return ['starting', 'live', 'reconnecting'].includes(state.session)
@@ -117,17 +134,29 @@ function handlePageShow () {
   checkAudioHealth()
 }
 
-async function showTaskNotification (frame) {
+function safePreview (value, limit = 140) {
+  return String(value || '')
+    .replace(/```/g, ' ')
+    .replace(/(?:\/Users\/|~\/)[^\s;,]+/g, '[private path]')
+    .replace(/\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/g, '[private email]')
+    .replace(/\b(?:gh[pousr]_|sk-|AIza)[A-Za-z0-9_-]{8,}\b/g, '[private token]')
+    .replace(/https?:\/\/\S+/g, '[private link]')
+    .replace(/\b(?:token|secret|password|api[_ -]?key)\s*[:=]\s*\S+/gi, '[private value]')
+    .replace(/\s+/g, ' ').trim().slice(0, limit) || 'A task update is ready in Mini Live.'
+}
+
+async function showTaskNotification (frame, { allowVisible = false } = {}) {
   if (!('Notification' in window) || !('serviceWorker' in navigator)) return
-  if (!notificationsEnabled || document.visibilityState === 'visible' || Notification.permission !== 'granted') return
+  if (!notificationsEnabled || (!allowVisible && document.visibilityState === 'visible') || Notification.permission !== 'granted') return
   try {
     const registration = await navigator.serviceWorker.ready
     if (typeof registration.showNotification !== 'function') return
     const approval = frame.type === 'task_needs_input'
-    const playful = approval ? 'The tiny librarians hit a locked drawer.' : 'Discombobulation complete.'
-    const body = approval ? String(frame.question || 'A task needs your approval.') : String(frame.preview || 'I found something useful for you.')
+    const failed = frame.type === 'task_failed' || frame.state === 'failed'
+    const playful = approval ? 'The tiny librarians hit a locked drawer.' : failed ? 'The tiny librarians hit a snag.' : 'Discombobulation complete.'
+    const body = approval ? String(frame.question || 'A task needs your approval.') : String(frame.preview || frame.detail || (failed ? 'A task failed.' : 'I found something useful for you.'))
     await registration.showNotification(playful, {
-      body: body.slice(0, 180), icon: './icons/icon-192.png', badge: './icons/icon-192.png',
+      body: safePreview(body), icon: './icons/icon-192.png', badge: './icons/icon-192.png',
       tag: `${frame.type}:${frame.id || ''}`, renotify: true, data: { url: './' }
     })
   } catch {}
@@ -142,6 +171,7 @@ function applyPendingWorkerRefresh () {
 
 function dispatch (frame) {
   state = reduceFrame(state, frame)
+  player?.setMuted(state.muted)
   syncWakeLock()
   render()
 }
@@ -164,11 +194,14 @@ function render () {
   elements.app.dataset.duplex = state.duplexMode
   elements.app.dataset.display = state.displayMode
   elements.app.dataset.working = String(state.pending.length > 0)
+  elements.app.dataset.streamComplete = String(state.streamComplete)
   const laneToken = laneVisualToken(state.activeLane || state.selectedLane)
   elements.app.style.setProperty('--lane-hue', String(laneToken.hue))
   elements.app.style.setProperty('--lane-motion', String(laneToken.motion))
   setText(elements.statusLabel, state.pending.length ? workingLine(Math.floor(Date.now() / 4200)) : status.label)
   setText(elements.statusDetail, status.detail || state.detail || '')
+  elements.topWorkingStatus.hidden = state.pending.length === 0
+  setText(elements.topWorkingText, state.pending.length === 1 ? 'Working on one task for you' : `Working on ${state.pending.length} tasks for you`)
   elements.app.style.setProperty('--task-count', String(Math.min(4, state.pending.length)))
   setText(elements.currentLane, state.laneName || 'One-off chat')
   setText(elements.topLane, state.laneName || 'One-off chat')
@@ -176,11 +209,13 @@ function render () {
   elements.startButton.textContent = state.session === 'error' || state.session === 'ended' ? 'Start again' : 'Start voice'
   elements.startPanel.hidden = !['idle', 'error', 'ended'].includes(state.session)
   elements.controls.hidden = !['starting', 'live', 'reconnecting'].includes(state.session)
-  elements.mute.setAttribute('aria-pressed', String(state.muted))
-  elements.mute.querySelector('span:last-child').textContent = state.muted ? 'Unmute' : 'Mute'
-  elements.mute.querySelector('.control-icon').textContent = state.muted ? '○' : '◉'
+  elements.mute.setAttribute('aria-pressed', String(state.micMuted))
+  elements.mute.querySelector('span:last-child').textContent = state.micMuted ? 'Mic on' : 'Mic mute'
+  elements.mute.querySelector('.control-icon').textContent = state.micMuted ? '○' : '◉'
+  elements.speakerMute.setAttribute('aria-pressed', String(state.outputMuted))
+  elements.speakerMute.querySelector('span:last-child').textContent = state.outputMuted ? 'Voice on' : 'Voice mute'
   elements.captions.setAttribute('aria-pressed', String(state.captionsEnabled))
-  elements.captions.querySelector('span:last-child').textContent = state.captionsEnabled ? 'Captions on' : 'Captions'
+  elements.captions.querySelector('span:last-child').textContent = 'Captions'
   elements.orb.setAttribute('aria-label', state.session === 'idle' ? 'Start voice call' : status.label)
   elements.highlightStack.setAttribute('role', state.highlights.length ? 'list' : 'button')
   elements.highlightStack.setAttribute('tabindex', state.highlights.length ? '-1' : '0')
@@ -203,7 +238,7 @@ function render () {
   setText(elements.soundState, state.soundCues ? 'Sound on' : 'Muted')
   elements.captions.hidden = state.displayMode !== 'orb'
   const captions = state.captionsEnabled ? state.captions : []
-  const showCaptions = state.displayMode === 'orb' && captions.length > 0
+  const showCaptions = captions.length > 0
   elements.liveCaption.hidden = !showCaptions
   const captionKey = showCaptions
     ? JSON.stringify(captions.map((caption) => [caption.speaker, caption.text, caption.updatedAt]))
@@ -215,7 +250,7 @@ function render () {
       line.className = `caption-line${index === captions.length - 1 ? ' caption-current' : ''}`
       line.dataset.speaker = caption.speaker
       const speaker = document.createElement('span')
-      speaker.textContent = caption.speaker === 'user' ? 'You' : 'Gemini'
+      speaker.textContent = caption.speaker === 'user' ? 'You' : 'Mini'
       const text = document.createElement('p')
       text.textContent = caption.text
       line.append(speaker, text)
@@ -266,22 +301,51 @@ function render () {
   }
 
   const streamKey = state.displayMode === 'stream'
-    ? JSON.stringify(state.streamWords.map((word) => [word.text, word.speaker, word.updatedAt]))
+    ? JSON.stringify(['stream', state.streamWordsBySpeaker, state.streamComplete])
     : 'hidden'
   if (streamKey !== renderedStreamKey) {
     renderedStreamKey = streamKey
-    const words = state.displayMode === 'stream' ? state.streamWords : []
-    elements.wordStream.replaceChildren(...words.map((word, index) => {
-      const item = document.createElement('span')
-      item.className = 'stream-word'
-      item.dataset.speaker = word.speaker
-      item.dataset.age = String(words.length - index - 1)
-      item.textContent = word.text
-      return item
+    const streams = state.displayMode === 'stream' ? state.streamWordsBySpeaker : { user: [], assistant: [] }
+    elements.wordStream.replaceChildren(...['user', 'assistant'].map((speaker) => {
+      const lane = document.createElement('div')
+      lane.className = `word-stream-lane word-stream-${speaker}`
+      const words = streams[speaker] || []
+      lane.append(...words.map((word, index) => {
+        const item = document.createElement('span')
+        item.className = 'stream-word'
+        item.dataset.speaker = speaker
+        item.dataset.age = String(words.length - index - 1)
+        item.style.setProperty('--stream-age', String(words.length - index - 1))
+        item.textContent = word.text
+        return item
+      }))
+      return lane
     }))
-    const latest = words.at(-1)
-    setText(elements.streamAnnouncer, latest ? `${latest.speaker === 'user' ? 'You' : 'Gemini'}: ${latest.text}` : '')
+    const latest = state.streamWords.at(-1)
+    setText(elements.streamAnnouncer, latest ? `${latest.speaker === 'user' ? 'You' : 'Mini'}: ${latest.text}` : '')
   }
+
+  const cards = taskCards(state.tasks, { now: Date.now(), expanded: tasksExpanded })
+  renderTaskOrbit(Date.now())
+  const showTaskDetails = state.displayMode !== 'orb' && cards.length > 0
+  elements.taskCards.hidden = !showTaskDetails
+  elements.taskCards.replaceChildren(...cards.map(task => {
+    const card = document.createElement('article')
+    card.className = 'task-card'
+    card.setAttribute('role', 'listitem')
+    card.dataset.state = task.state
+    const title = document.createElement('strong')
+    title.textContent = task.title
+    const meta = document.createElement('span')
+    meta.textContent = `${task.state.replace('_', ' ')} · ${formatElapsed(task.elapsedSeconds)}`
+    const preview = document.createElement('p')
+    preview.textContent = task.question || task.preview
+    card.append(title, meta)
+    if (preview.textContent) card.append(preview)
+    return card
+  }))
+  elements.taskMore.hidden = state.displayMode === 'orb' || (cards.more === 0 && !tasksExpanded)
+  elements.taskMore.textContent = tasksExpanded ? 'Show less' : `+${cards.more} more`
 
   const approval = state.approvals[0]
   elements.approvalSheet.hidden = !approval
@@ -304,6 +368,44 @@ function render () {
       return ember
     }))
   }
+}
+
+function renderTaskOrbit (now) {
+  const radialTasks = state.displayMode === 'orb' ? radialTaskCards(state.tasks, { now }) : []
+  elements.taskRings.replaceChildren(...radialTasks.map((task, index) => {
+    const item = document.createElement('span')
+    item.className = 'task-orbit-item'
+    item.dataset.state = task.state
+    item.style.setProperty('--task-index', String(index))
+    item.style.setProperty('--task-angle', String([-42, 48, 138][index] || 0))
+    item.style.setProperty('--task-radius', `${128 - index * 14}px`)
+    item.style.setProperty('--task-size', `${task.orbSize}px`)
+    item.style.setProperty('--task-drift', `${task.driftSeconds}s`)
+    const halo = document.createElement('b')
+    halo.className = 'task-orbit-halo'
+    const marker = document.createElement('i')
+    marker.className = 'task-orbit-marker'
+    const text = document.createElement('span')
+    text.className = 'task-orbit-text'
+    const suffix = task.state === 'completed'
+      ? 'done'
+      : task.state === 'failed'
+        ? 'failed'
+        : task.state === 'cancelled'
+          ? 'cancelled'
+          : ['interrupted', 'timed_out', 'unavailable'].includes(task.state)
+            ? task.state.replace('_', ' ')
+            : formatElapsed(task.elapsedSeconds)
+    const title = document.createElement('span')
+    title.className = 'task-orbit-title'
+    title.textContent = task.shortTitle
+    const meta = document.createElement('span')
+    meta.className = 'task-orbit-meta'
+    meta.textContent = suffix
+    text.append(title, meta)
+    item.append(halo, marker, text)
+    return item
+  }))
 }
 
 function showToast (message) {
@@ -334,7 +436,7 @@ function playSoundCue (context, cue) {
 function emitFeedback (kind) {
   const cue = feedbackCue(kind)
   if (cue.vibration.length) navigator.vibrate?.(cue.vibration)
-  if (state.soundCues) playSoundCue(audioContext, cue)
+  if (state.soundCues && !state.outputMuted) playSoundCue(audioContext, cue)
 }
 
 async function playDetachedSoundCue (cue, guard = () => true) {
@@ -421,6 +523,9 @@ function createPlayer (context) {
         currentTime: context.currentTime
       })
     },
+    setMuted (muted) {
+      gain.gain.setValueAtTime(muted ? 0 : 1, context.currentTime)
+    },
     flush () {
       for (const node of live) {
         try { node.stop() } catch {}
@@ -438,15 +543,25 @@ function createPlayer (context) {
 
 function handleMicChunk (pcm, peak) {
   const now = performance.now()
-  if (peak >= SPEECH_ON) lastMicAbove = now
-  const speaking = peak >= SPEECH_ON || now - lastMicAbove < SPEECH_OFF_MS
   const assistantSpeaking = player?.isPlaying() || false
+  if (state.duplexMode === 'stable' && assistantSpeaking && now >= interruptUntil) {
+    lastMicAbove = 0
+    return
+  }
+  const natural = naturalSpeechGate(naturalGate, { peak, now, assistantSpeaking })
+  naturalGate = natural.gate
+  if (state.duplexMode === 'natural' && assistantSpeaking && natural.speaking) player?.flush()
+  if (peak >= SPEECH_ON) lastMicAbove = now
+  const speaking = state.duplexMode === 'natural'
+    ? natural.speaking
+    : peak >= SPEECH_ON || now - lastMicAbove < SPEECH_OFF_MS
   const send = shouldTransmitMic({
     mode: state.duplexMode,
     assistantSpeaking,
-    interrupting: now < interruptUntil
+    interrupting: now < interruptUntil,
+    micMuted: state.micMuted
   })
-  if (!state.muted && send && socket?.readyState === WebSocket.OPEN) {
+  if (send && socket?.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({ type: 'audio', data: bytesToBase64(pcm) }))
   }
   const userSpeaking = speaking && send
@@ -511,7 +626,9 @@ function socketUrl () {
   const url = new URL('./relay', window.location.href)
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
   if (state.selectedLane) url.searchParams.set('lane', state.selectedLane)
-  url.searchParams.set('call', callId)
+  const conversationScope = state.selectedLane || 'one-off'
+  url.searchParams.set('call', `${callId}:lane:${conversationScope}`)
+  url.searchParams.set('conversation', callId)
   url.searchParams.set('voice', selectedVoice)
   return url.toString()
 }
@@ -519,12 +636,20 @@ function socketUrl () {
 function receiveFrame (event) {
   let frame
   try { frame = JSON.parse(event.data) } catch { return }
-  if (frame.type === 'task_done' || frame.type === 'task_needs_input') void showTaskNotification(frame)
+  if (frame.type === 'task_done' || frame.type === 'task_needs_input' || frame.type === 'task_failed') void showTaskNotification(frame)
 
   if (frame.type === 'ready') {
     const resumedFresh = state.session === 'reconnecting'
     emitFeedback('connected')
-    if (resumedFresh) showToast(frame.resumed ? 'Resumed conversation' : 'Reconnected — continuity restored from Mini')
+    if (resumedFresh) {
+      frame.statusText = frame.resumed ? 'Resumed conversation' : 'Reconnected — continuity restored from Mini'
+    } else {
+      const welcomeText = frame.welcome === 'resumed' ? 'Hey, I’m back.' : 'Hey, what can we do?'
+      frame.statusText = frame.welcome === 'resumed' ? 'Conversation resumed' : 'Session ready'
+      if (!state.muted && socket?.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: 'text', text: welcomeText }))
+      }
+    }
   }
 
   if (frame.type === 'audio' && frame.data) {
@@ -553,12 +678,14 @@ function receiveFrame (event) {
 function animationLoop () {
   const assistantLevel = player?.level() || 0
   const shownLevel = state.voice === 'assistant' ? assistantLevel : state.level
+  presence.setLevel(state.muted ? shownLevel * 0.35 : shownLevel)
   elements.orb.style.setProperty('--level', String(Math.max(0, Math.min(1, shownLevel))))
   const elapsedText = startedAt && ['starting', 'live'].includes(state.session)
     ? formatElapsed((Date.now() - startedAt) / 1000)
     : '0:00'
   setText(elements.elapsed, elapsedText)
   setText(elements.topElapsed, elapsedText)
+  if (state.displayMode === 'orb' && state.tasks.some(task => ['submitting', 'working', 'needs_input'].includes(task.state))) renderTaskOrbit(Date.now())
   renderFrame = window.requestAnimationFrame(animationLoop)
 }
 
@@ -584,22 +711,12 @@ function connectSocket () {
 
 function scheduleReconnect () {
   if (state.reconnectAttempt >= 3) {
-    state = {
-      ...state,
-      session: 'ended',
-      voice: 'listening',
-      pending: [],
-      approvals: [],
-      captions: [],
-      highlights: [],
-      highlightWindow: [],
-      streamWords: [],
-      streamSources: { user: '', assistant: '' },
+    dispatch({
+      type: 'reconnect_exhausted',
       detail: 'The voice connection could not be restored. Your lane and preferences are still selected.'
-    }
+    })
     emitFeedback('failed')
     releaseResources(false)
-    render()
     return
   }
   const nextAttempt = state.reconnectAttempt + 1
@@ -651,7 +768,9 @@ async function startCall () {
       highlights: [],
       highlightWindow: [],
       streamWords: [],
+      streamWordsBySpeaker: { user: [], assistant: [] },
       streamSources: { user: '', assistant: '' },
+      streamComplete: false,
       detail: error?.message || String(error)
     }
     releaseResources(true)
@@ -704,6 +823,7 @@ function releaseResources (closeSocket = true) {
   }
   socket = null
   interruptUntil = 0
+  naturalGate = { active: false, onsetAt: 0, lastAboveAt: 0, noiseFloor: naturalGate.noiseFloor || 0.012 }
   captureNode?.disconnect?.()
   captureSource?.disconnect?.()
   captureSink?.disconnect?.()
@@ -723,8 +843,9 @@ async function stopCall (setIdle = true) {
   if (setIdle && ['starting', 'live', 'reconnecting'].includes(state.session)) {
     const cue = feedbackCue('ended')
     if (cue.vibration.length) navigator.vibrate?.(cue.vibration)
-    if (state.soundCues) void playDetachedSoundCue(cue)
+    if (state.soundCues && !state.outputMuted) void playDetachedSoundCue(cue)
   }
+  if (setIdle && state.pending.length) showToast(`Voice ended. ${state.pending.length} task${state.pending.length === 1 ? '' : 's'} continue in ${state.laneName || 'this lane'}.`)
   releaseResources(true)
   window.clearTimeout(captionTimer)
   captionTimer = 0
@@ -745,8 +866,24 @@ async function stopCall (setIdle = true) {
   applyPendingWorkerRefresh()
 }
 
-function toggleMute () {
-  dispatch({ type: 'mute', muted: !state.muted })
+function toggleMic () {
+  dispatch({ type: 'mic_mute', muted: !state.micMuted })
+}
+
+function toggleOutput () {
+  const muted = !state.outputMuted
+  if (muted) localStorage.setItem('hermes-live-captions', 'on')
+  dispatch({ type: 'output_mute', muted })
+}
+
+function toggleCaptions () {
+  if (state.muted && state.captionsEnabled) {
+    showToast('Captions stay on while voice is muted')
+    return
+  }
+  const enabled = !state.captionsEnabled
+  localStorage.setItem('hermes-live-captions', enabled ? 'on' : 'off')
+  dispatch({ type: 'caption_toggle', enabled })
 }
 
 function answerApproval (choice) {
@@ -801,7 +938,7 @@ async function boot () {
     }))
     const remembered = localStorage.getItem('hermes-live-lane')
     const captionsEnabled = localStorage.getItem('hermes-live-captions') === 'on'
-    const duplexMode = localStorage.getItem('hermes-live-duplex') === 'natural' ? 'natural' : 'stable'
+    const duplexMode = localStorage.getItem('hermes-live-duplex') === 'stable' ? 'stable' : 'natural'
     const soundCues = localStorage.getItem('hermes-live-sound-cues') === 'on'
     const storedDisplay = localStorage.getItem('mini-live-display')
     const displayMode = ['text', 'stream'].includes(storedDisplay) ? storedDisplay : 'orb'
@@ -811,6 +948,8 @@ async function boot () {
     notificationsEnabled = 'Notification' in window && localStorage.getItem('mini-live-notifications') === 'on' && Notification.permission === 'granted'
     elements.notifications.checked = notificationsEnabled
     setText(elements.notificationsState, notificationsEnabled ? 'Notify on' : 'Notify off')
+    const installed = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true
+    setText(elements.notificationDiagnostics, `Permission: ${'Notification' in window ? Notification.permission : 'unavailable'} · Installed: ${installed ? 'yes' : 'no'}`)
     const selected = availableLanes.find((lane) => lane.id === remembered) || general
     elements.laneSelect.value = selected.id
     state = {
@@ -925,12 +1064,17 @@ elements.notifications.addEventListener('change', async () => {
   setText(elements.notificationsState, notificationsEnabled ? 'Notify on' : 'Blocked')
   if (!notificationsEnabled) showToast('Notifications are blocked in iPhone settings.')
 })
-elements.mute.addEventListener('click', toggleMute)
-elements.captions.addEventListener('click', () => {
-  const enabled = !state.captionsEnabled
-  localStorage.setItem('hermes-live-captions', enabled ? 'on' : 'off')
-  dispatch({ type: 'caption_toggle', enabled })
+elements.testNotification.addEventListener('click', async () => {
+  if (!notificationsEnabled || Notification.permission !== 'granted') {
+    showToast('Enable notifications first.')
+    return
+  }
+  await showTaskNotification({ type: 'task_done', id: 'test', preview: 'Mini Live notifications are ready.' }, { allowVisible: true })
 })
+elements.mute.addEventListener('click', toggleMic)
+elements.speakerMute.addEventListener('click', toggleOutput)
+elements.taskMore.addEventListener('click', () => { tasksExpanded = !tasksExpanded; render() })
+elements.captions.addEventListener('click', toggleCaptions)
 elements.end.addEventListener('click', () => void stopCall())
 elements.approve.addEventListener('click', () => answerApproval('approve'))
 elements.deny.addEventListener('click', () => answerApproval('deny'))
@@ -946,7 +1090,9 @@ render()
 renderFrame = window.requestAnimationFrame(animationLoop)
 window.addEventListener('beforeunload', () => {
   window.cancelAnimationFrame(renderFrame)
+  presence.destroy()
   window.clearTimeout(captionTimer)
   releaseResources(true)
+
 })
 void boot()

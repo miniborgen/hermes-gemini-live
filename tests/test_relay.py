@@ -120,8 +120,38 @@ async def test_mic_and_type_frames_reach_the_live_socket(opened):
     await relay.run_relay(browser)
     assert live.audio_in == ["AAA="]
     assert live.text_in == ["hello"]
-    assert browser.sent[0] == {"type": "ready", "resumed": False}
+    assert browser.sent[0] == {"type": "ready", "resumed": False, "welcome": "new"}
     assert live.closed is True
+
+
+@pytest.mark.asyncio
+async def test_reconnect_without_a_provider_handle_is_honestly_new(opened):
+    relay.clear_continuity()
+    first = opened(FakeLive(end_after_script=False))
+    await relay.run_relay(FakeBrowser([{"type": "close"}]), continuity_key="lane-personal")
+    assert first.closed is True
+
+    second = opened(FakeLive(end_after_script=False))
+    browser = FakeBrowser([{"type": "close"}])
+    await relay.run_relay(browser, continuity_key="lane-personal")
+
+    assert browser.sent[0] == {"type": "ready", "resumed": False, "welcome": "new"}
+    assert second.closed is True
+
+
+@pytest.mark.asyncio
+async def test_first_connection_to_another_lane_is_new_even_in_the_same_browser_call(opened):
+    first = opened(FakeLive(end_after_script=False))
+    await relay.run_relay(FakeBrowser([{"type": "close"}]),
+                          continuity_key="browser-call:lane:personal-assistant")
+    assert first.closed is True
+
+    second = opened(FakeLive(end_after_script=False))
+    browser = FakeBrowser([{"type": "close"}])
+    await relay.run_relay(browser, continuity_key="browser-call:lane:garage-r129")
+
+    assert browser.sent[0] == {"type": "ready", "resumed": False, "welcome": "new"}
+    assert second.closed is True
 
 
 @pytest.mark.asyncio
@@ -219,6 +249,64 @@ async def test_a_tool_call_answers_with_a_receipt_and_starts_no_wait(opened, mon
     assert task_id == "call_7"
     assert callable(on_needs_input)
     assert live.responses and live.responses[0]["result"].startswith("WORK_STARTED call_7")
+
+
+@pytest.mark.asyncio
+async def test_task_lifecycle_events_are_persisted_as_safe_structured_snapshots(opened, monkeypatch):
+    stored = []
+
+    class Store:
+        def upsert(self, scope, lane_id, task):
+            stored.append((scope, lane_id, task))
+
+    callbacks = {}
+
+    def fake_start_task(prompt, **kwargs):
+        callbacks.update(kwargs)
+        return "run-1"
+
+    monkeypatch.setattr(relay.agent_lane, "start_task", fake_start_task)
+    live = opened(FakeLive(incoming=[]))
+    browser = FakeBrowser([])
+    book = agent_lane.RunBook()
+    lane = type("Lane", (), {"id": "garage-r129", "name": "Garage /Users/private"})()
+
+    await relay._handle_tool_call(
+        {"id": "task-1", "name": "hermes_task", "args": {"task": "Read /Users/private/file"}},
+        live, browser, book, "scope", None, relay.NoteQueue(live), voice_lane=lane,
+        task_store=Store(), conversation_key="browser-1")
+    callbacks["on_needs_input"]("task-1", "Approve https://private.example", "req-1")
+    await asyncio.sleep(0.05)
+    callbacks["on_finished"]("task-1", "completed", "Done at /Users/private/result")
+    await asyncio.sleep(0.05)
+
+    assert [item[2]["state"] for item in stored] == ["working", "needs_input", "completed"]
+    assert all(item[0:2] == ("browser-1", "garage-r129") for item in stored)
+    assert "/Users/" not in stored[0][2]["title"]
+    assert "https://" not in stored[1][2]["question"]
+    assert "/Users/" not in stored[2][2]["preview"]
+
+
+@pytest.mark.asyncio
+async def test_task_updates_are_persisted(opened, monkeypatch):
+    stored = []
+
+    class Store:
+        def upsert(self, scope, lane_id, task):
+            stored.append((scope, lane_id, task))
+
+    monkeypatch.setattr(relay.agent_lane, "steer", lambda *args, **kwargs: None)
+    live = opened(FakeLive(incoming=[]))
+    book = agent_lane.RunBook()
+    book.register("task-1", "Private task")
+    book.attach_run("task-1", "run-1")
+    await relay._update_task(
+        "call-1", {"task": "task-1", "action": "steer", "answer": "continue"}, live,
+        FakeBrowser([]), book, None, None, task_store=Store(),
+        conversation_key="browser-1", lane_id="one-off")
+
+    assert stored[0][0:2] == ("browser-1", "one-off")
+    assert stored[0][2]["state"] == "working"
 
 
 @pytest.mark.asyncio
@@ -420,6 +508,44 @@ async def test_a_browser_that_navigates_away_ends_the_call_without_an_error(open
     await relay.run_relay(browser)
     assert [f for f in browser.sent if f["type"] == "error"] == []
     assert live.closed is True
+
+
+@pytest.mark.asyncio
+async def test_voice_origin_task_events_are_mirrored_with_sanitized_previews(opened, monkeypatch):
+    class Mirror:
+        def enqueue_async(self, lane, event, **fields):
+            mirrored.append((event, fields))
+    mirrored = []
+    monkeypatch.setattr(relay.agent_lane, "start_task", lambda *args, **kwargs: "run-1")
+    lane = type("Lane", (), {"id": "garage-r129", "name": "Garage R129", "chat_id": "trusted", "thread_id": 1})()
+    live = opened(FakeLive(incoming=[]))
+    browser = FakeBrowser([])
+    book = agent_lane.RunBook()
+
+    await relay._handle_tool_call(
+        {"id": "task-1", "name": "giao_viec_cho_hermes", "args": {"task": "Find wheel fitment"}},
+        live, browser, book, "scope", None, relay.NoteQueue(live), voice_lane=lane,
+        mirror=Mirror())
+
+    assert mirrored == [("started", {"task_id": "task-1", "preview": "Find wheel fitment"})]
+
+
+@pytest.mark.asyncio
+async def test_finished_voice_task_mirrors_only_sanitized_result(monkeypatch):
+    class Mirror:
+        def enqueue_async(self, lane, event, **fields):
+            mirrored.append((event, fields))
+    mirrored = []
+    lane = type("Lane", (), {"id": "garage-r129", "name": "Garage R129", "chat_id": "trusted", "thread_id": 1})()
+    callback = relay._make_finisher(relay.NoteQueue(FakeLive(end_after_script=False)),
+                                    FakeBrowser([]), asyncio.get_running_loop(), voice_lane=lane,
+                                    mirror=Mirror())
+    callback("task-1", "completed", "Found it at /Users/private/secret.txt")
+    await asyncio.sleep(0.05)
+
+    assert mirrored[0][0] == "completed"
+    assert mirrored[0][1]["task_id"] == "task-1"
+    assert "/Users/" not in mirrored[0][1]["preview"]
 
 
 @pytest.mark.asyncio

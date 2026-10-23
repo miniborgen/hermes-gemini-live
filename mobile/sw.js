@@ -1,5 +1,5 @@
-const CACHE = 'mini-live-shell-v34'
-const SHELL = ['./', './styles.css', './app.js', './state.mjs', './audio-worklet.js', './manifest.webmanifest', './fonts/source-serif-4.woff2', './fonts/inter.woff2', './fonts/jetbrains-mono.woff2', './icons/icon-192.png', './icons/icon-512.png']
+const CACHE = 'mini-live-shell-v63'
+const SHELL = ['./', './styles.css', './app.js', './state.mjs', './presence-webgl.mjs', './audio-worklet.js', './manifest.webmanifest', './fonts/source-serif-4.woff2', './fonts/inter.woff2', './fonts/jetbrains-mono.woff2', './icons/icon-192.png', './icons/icon-512.png']
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)))

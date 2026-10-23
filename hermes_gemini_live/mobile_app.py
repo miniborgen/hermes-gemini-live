@@ -9,13 +9,19 @@ from __future__ import annotations
 
 import hmac
 import ipaddress
+import json
+import os
+import sqlite3
+import threading
+import time
 from collections.abc import Mapping
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 
-from . import config, lanes, relay
+from . import config, lanes, relay, telegram_mirror
 
 _NO_STORE = {"Cache-Control": "no-store"}
 _SECURITY_HEADERS = {
@@ -34,6 +40,7 @@ _MOBILE_ROOT = Path(__file__).resolve().parent.parent / "mobile"
 _ASSETS = {
     "app.js": "application/javascript",
     "state.mjs": "application/javascript",
+    "presence-webgl.mjs": "application/javascript",
     "audio-worklet.js": "application/javascript",
     "styles.css": "text/css",
     "sw.js": "application/javascript",
@@ -44,6 +51,54 @@ _ASSETS = {
     "icons/icon-192.png": "image/png",
     "icons/icon-512.png": "image/png",
 }
+
+
+class TaskSnapshotStore:
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+        self._lock = threading.Lock()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self._connect() as db:
+            db.execute("""CREATE TABLE IF NOT EXISTS task_snapshots (
+                scope TEXT NOT NULL, lane_id TEXT NOT NULL, task_id TEXT NOT NULL,
+                payload TEXT NOT NULL, updated_at REAL NOT NULL,
+                PRIMARY KEY(scope,lane_id,task_id))""")
+
+    def _connect(self):
+        return sqlite3.connect(self.path, timeout=5)
+
+    def upsert(self, scope: str, lane_id: str, task: dict) -> None:
+        task_id = str(task.get("id") or "")[:128]
+        if not scope or not task_id:
+            return
+        previous: dict = {}
+        with self._lock, self._connect() as db:
+            row = db.execute(
+                "SELECT payload FROM task_snapshots WHERE scope=? AND lane_id=? AND task_id=?",
+                (scope[:128], lane_id[:128], task_id),
+            ).fetchone()
+            if row:
+                previous = json.loads(row[0])
+        safe = {
+            "id": task_id,
+            "title": relay._result_preview(str(task.get("title") or task.get("prompt") or previous.get("title") or "Delegated task"), 96),
+            "state": str(task.get("state") or previous.get("state") or "working")[:32],
+            "startedAt": float(task.get("startedAt") or previous.get("startedAt") or time.time() * 1000),
+            "updatedAt": float(task.get("updatedAt") or time.time() * 1000),
+            "laneId": str(task.get("laneId") or previous.get("laneId") or lane_id)[:128],
+            "laneName": relay._result_preview(str(task.get("laneName") or previous.get("laneName") or ""), 64),
+            "question": relay._result_preview(str(task.get("question", previous.get("question", ""))), 180) if task.get("question", previous.get("question")) else "",
+            "preview": relay._result_preview(str(task.get("preview", previous.get("preview", ""))), 180) if task.get("preview", previous.get("preview")) else "",
+        }
+        with self._lock, self._connect() as db:
+            db.execute("INSERT OR REPLACE INTO task_snapshots(scope,lane_id,task_id,payload,updated_at) VALUES(?,?,?,?,?)",
+                       (scope[:128], lane_id[:128], safe["id"], json.dumps(safe), time.time()))
+
+    def snapshot(self, scope: str, lane_id: str) -> list[dict]:
+        with self._lock, self._connect() as db:
+            rows = db.execute("SELECT payload FROM task_snapshots WHERE scope=? AND lane_id=? ORDER BY updated_at DESC LIMIT 32",
+                              (scope[:128], lane_id[:128])).fetchall()
+        return [json.loads(row[0]) for row in rows]
 
 
 def _identity_allowed(headers: Mapping[str, str], allowed_login: str) -> bool:
@@ -67,8 +122,28 @@ def _asset_response(name: str) -> FileResponse:
     return FileResponse(target, media_type=media_type, headers=_NO_STORE)
 
 
-def create_app(*, allowed_login: str) -> FastAPI:
-    app = FastAPI(title="Mini Live Mobile", docs_url=None, redoc_url=None)
+def _home() -> Path:
+    configured = (os.environ.get("HERMES_HOME") or "").strip()
+    return Path(configured).expanduser() if configured else Path.home() / ".hermes"
+
+
+def create_app(*, allowed_login: str,
+               mirror: telegram_mirror.TelegramMirror | None = None,
+               task_store: TaskSnapshotStore | None = None) -> FastAPI:
+    mirror = mirror or telegram_mirror.TelegramMirror(
+        _home() / "state" / "mini-live-telegram.sqlite3")
+    task_store = task_store or TaskSnapshotStore(_home() / "state" / "mini-live-tasks.sqlite3")
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        mirror.start()
+        try:
+            yield
+        finally:
+            mirror.close()
+
+    app = FastAPI(title="Mini Live Mobile", docs_url=None, redoc_url=None,
+                  lifespan=lifespan)
 
     @app.middleware("http")
     async def require_tailnet_identity(request: Request, call_next):
@@ -87,11 +162,14 @@ def create_app(*, allowed_login: str) -> FastAPI:
 
     @app.get("/status")
     async def status() -> dict[str, object]:
-        return config.status_dict()
+        payload = config.status_dict()
+        payload["push"] = False
+        return payload
 
     @app.get("/lanes")
     async def voice_lanes() -> dict[str, object]:
         return {"lanes": lanes.list_lanes()}
+
 
     @app.websocket("/relay")
     async def live_relay(ws: WebSocket) -> None:
@@ -101,6 +179,8 @@ def create_app(*, allowed_login: str) -> FastAPI:
             return
         lane_id = str(ws.query_params.get("lane") or "").strip()
         continuity_key = str(ws.query_params.get("call") or "").strip()[:128] or None
+        conversation_key = str(ws.query_params.get("conversation") or "").strip()[:128] or continuity_key
+
         voice = str(ws.query_params.get("voice") or "").strip()
         if voice not in {"Aoede", "Kore", "Puck", "Charon", "Fenrir"}:
             voice = None
@@ -117,6 +197,9 @@ def create_app(*, allowed_login: str) -> FastAPI:
                 voice_lane=voice_lane,
                 continuity_key=continuity_key,
                 voice=voice,
+                mirror=mirror,
+                task_store=task_store,
+                conversation_key=conversation_key,
             )
         except WebSocketDisconnect:
             pass

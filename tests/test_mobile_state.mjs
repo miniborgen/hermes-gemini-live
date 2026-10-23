@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { conversationHighlight, feedbackCue, hasScheduledPlayback, initialState, isCurrentConnection, laneVisualToken, nextDisplayMode, reconnectDelay, reduceFrame, shouldConnectAfterLaneSwitch, shouldTransmitMic, visibleStatus, workingLine } from '../mobile/state.mjs'
+import { conversationHighlight, feedbackCue, hasScheduledPlayback, initialState, isCurrentConnection, laneVisualToken, naturalSpeechGate, nextDisplayMode, radialTaskCards, reconnectDelay, reduceFrame, shouldConnectAfterLaneSwitch, shouldTransmitMic, taskCards, taskTitle, visibleStatus, workingLine } from '../mobile/state.mjs'
 
 test('task frames maintain a per-task approval queue and exact ids', () => {
   let state = initialState()
@@ -19,6 +19,98 @@ test('task frames maintain a per-task approval queue and exact ids', () => {
 
   state = reduceFrame(state, { type: 'task_done', id: 'b', state: 'completed' })
   assert.deepEqual(state.pending, ['a'])
+})
+
+test('ready frames put session status in the unified status block', () => {
+  const state = reduceFrame(initialState(), { type: 'ready', statusText: 'Conversation resumed' })
+  assert.equal(state.session, 'live')
+  assert.equal(state.detail, 'Conversation resumed')
+  assert.equal(visibleStatus(state).detail, 'Conversation resumed')
+})
+
+test('structured tasks keep safe names timestamps lane and terminal previews', () => {
+  let state = { ...initialState(), activeLane: 'garage-r129', laneName: 'Garage — R129' }
+  state = reduceFrame(state, { type: 'task_started', id: 'a', prompt: 'Check https://private.example and /Users/me/file', at: 1000 })
+  assert.equal(state.tasks[0].title, 'Check private link and private path')
+  assert.deepEqual(state.tasks[0], {
+    id: 'a', title: 'Check private link and private path', state: 'working', startedAt: 1000,
+    updatedAt: 1000, laneId: 'garage-r129', laneName: 'Garage — R129', question: '', preview: ''
+  })
+  state = reduceFrame(state, { type: 'task_failed', id: 'a', detail: 'Failed at /Users/me/file', preview: 'Could not read /Users/me/file', at: 4000 })
+  assert.equal(state.tasks[0].state, 'failed')
+  assert.equal(state.tasks[0].preview, 'Could not read private path')
+  assert.deepEqual(state.pending, [])
+})
+
+test('task cards show three tasks then an expandable remainder and elapsed active time', () => {
+  const tasks = Array.from({ length: 5 }, (_, index) => ({
+    id: String(index), title: `Task ${index}`, state: index === 0 ? 'completed' : 'working',
+    startedAt: index * 1000, updatedAt: index * 1000, laneId: '', laneName: '', question: '', preview: ''
+  }))
+  assert.deepEqual(taskCards(tasks, { now: 10000, expanded: false }).map(item => item.title), ['Task 4', 'Task 3'])
+  assert.equal(taskCards(tasks, { now: 10000, expanded: false }).more, 3)
+  assert.equal(taskCards(tasks, { now: 10000, expanded: true }).length, 5)
+  assert.equal(taskCards(tasks, { now: 10000, expanded: true })[0].elapsedSeconds, 6)
+})
+
+test('radial task labels select active work before overflow and stay short', () => {
+  const tasks = [
+    { id: 'done-2', title: 'A recent completed task', state: 'completed', startedAt: 9000, updatedAt: 10000 },
+    { id: 'done-1', title: 'Another recent completed task', state: 'completed', startedAt: 8000, updatedAt: 9000 },
+    { id: 'active-1', title: 'Schedule an event on the calendar tonight at 8:30 PM for the family', state: 'working', startedAt: 1000, updatedAt: 2000 },
+    { id: 'active-2', title: 'Check Magnus calendar history for the usual evening routine', state: 'needs_input', startedAt: 1000, updatedAt: 1500 }
+  ]
+  const radial = radialTaskCards(tasks, { now: 11000 })
+  assert.deepEqual(radial.map(task => task.id), ['active-1', 'active-2', 'done-2'])
+  assert.equal(radial[0].shortTitle, 'Schedule calendar event')
+  assert.equal(radial[1].shortTitle, 'Check calendar history')
+  assert.equal(radial[0].elapsedSeconds, 10)
+  assert.ok(radial.every(task => task.orbSize >= 7 && task.orbSize <= 13))
+  assert.ok(radial.every(task => task.driftSeconds >= 18 && task.driftSeconds <= 30))
+  assert.equal(radial[0].orbSize, radialTaskCards(tasks, { now: 12000 })[0].orbSize)
+})
+
+test('radial task labels retain recent terminal outcomes after active work', () => {
+  const tasks = [
+    { id: 'active', title: 'Check calendar history', state: 'working', startedAt: 1000, updatedAt: 5000 },
+    { id: 'done', title: 'Submit signed Sunnyside form', state: 'completed', startedAt: 1000, updatedAt: 6000, preview: 'Submitted successfully' },
+    { id: 'failed', title: 'Fetch archived invoice', state: 'failed', startedAt: 1000, updatedAt: 4000, preview: 'No invoice found' }
+  ]
+  const radial = radialTaskCards(tasks, { now: 7000 })
+  assert.deepEqual(radial.map(task => task.id), ['active', 'done', 'failed'])
+  assert.equal(radial[1].state, 'completed')
+  assert.equal(radial[1].shortTitle, 'Submit signed Sunnyside form')
+})
+
+test('task title removes transcripts credentials emails urls and paths', () => {
+  assert.equal(taskTitle('Please email me@example.com token=secret https://example.com /Users/me/a'), 'Please email private email private value private link private path')
+})
+
+test('mic mute and output mute are independent', () => {
+  let state = reduceFrame(initialState(), { type: 'mic_mute', muted: true })
+  assert.equal(state.micMuted, true)
+  assert.equal(state.outputMuted, false)
+  state = reduceFrame(state, { type: 'output_mute', muted: true })
+  assert.equal(state.micMuted, true)
+  assert.equal(state.outputMuted, true)
+  assert.equal(state.captionsEnabled, true)
+  assert.equal(shouldTransmitMic({ mode: 'natural', assistantSpeaking: false, micMuted: true }), false)
+  assert.equal(shouldTransmitMic({ mode: 'stable', assistantSpeaking: true, micMuted: false, interrupting: false }), false)
+  assert.equal(shouldTransmitMic({ mode: 'stable', assistantSpeaking: true, micMuted: false, interrupting: true }), true)
+})
+
+test('natural barge-in requires sustained onset and hysteresis while playback is active', () => {
+  let gate = { active: false, onsetAt: 0, lastAboveAt: 0, noiseFloor: 0.012 }
+  let result = naturalSpeechGate(gate, { peak: 0.04, now: 1000, assistantSpeaking: true })
+  assert.equal(result.speaking, false)
+  result = naturalSpeechGate(result.gate, { peak: 0.04, now: 1070, assistantSpeaking: true })
+  assert.equal(result.speaking, false)
+  result = naturalSpeechGate(result.gate, { peak: 0.04, now: 1140, assistantSpeaking: true })
+  assert.equal(result.speaking, true)
+  result = naturalSpeechGate(result.gate, { peak: 0.018, now: 1300, assistantSpeaking: true })
+  assert.equal(result.speaking, true)
+  result = naturalSpeechGate(result.gate, { peak: 0.008, now: 1720, assistantSpeaking: true })
+  assert.equal(result.speaking, false)
 })
 
 test('voice frames distinguish user, thinking, and assistant motion states', () => {
@@ -45,6 +137,19 @@ test('visible status prioritizes work and mute without hiding approvals', () => 
 
   state = { ...state, approvals: [{ id: 'a', question: 'Allow?', sending: false }] }
   assert.equal(visibleStatus(state).label, 'Approval needed')
+})
+
+test('muting voice output enables captions and unmuting keeps them available', () => {
+  let state = { ...initialState(), session: 'live', captionsEnabled: false }
+  state = reduceFrame(state, { type: 'mute', muted: true })
+  assert.equal(state.muted, true)
+  assert.equal(state.captionsEnabled, true)
+  assert.equal(state.outputGain, 0)
+
+  state = reduceFrame(state, { type: 'mute', muted: false })
+  assert.equal(state.muted, false)
+  assert.equal(state.captionsEnabled, true)
+  assert.equal(state.outputGain, 1)
 })
 
 test('working copy rotates through a varied playful set', () => {
@@ -123,6 +228,11 @@ test('stable playback gating follows scheduled buffers rather than analyser resi
   assert.equal(hasScheduledPlayback({ liveCount: 0, scheduledUntil: 12, currentTime: 11.5 }), false)
 })
 
+test('stable mode never marks playback feedback as user speech', () => {
+  assert.equal(shouldTransmitMic({ mode: 'stable', assistantSpeaking: true, interrupting: false }), false)
+  assert.equal(shouldTransmitMic({ mode: 'stable', assistantSpeaking: true, interrupting: true }), true)
+})
+
 test('stale socket callbacks cannot act on a replacement connection', () => {
   const oldSocket = {}
   const newSocket = {}
@@ -186,16 +296,77 @@ test('stream mode keeps a deduplicated rolling word trail for both speakers', ()
   state = reduceFrame(state, { type: 'out_text', text: 'The next task is ready', at: 2000 })
   assert.deepEqual(state.streamWords.slice(-5).map(item => item.text), ['The', 'next', 'task', 'is', 'ready'])
   assert.equal(state.streamWords.at(-1).speaker, 'assistant')
+  assert.deepEqual(state.streamWordsBySpeaker.user.map(item => item.text), ['I', 'am', 'checking', 'the', 'garage', 'now'])
+  assert.deepEqual(state.streamWordsBySpeaker.assistant.map(item => item.text), ['The', 'next', 'task', 'is', 'ready'])
+})
+
+test('stream mode treats arriving text as visual word material', () => {
+  let state = reduceFrame(initialState(), { type: 'display_mode', mode: 'stream' })
+  state = reduceFrame(state, { type: 'out_text', text: 'I can', at: 1000 })
+  state = reduceFrame(state, { type: 'out_text', text: ' help', at: 1100 })
+  state = reduceFrame(state, { type: 'out_text', text: ' you', at: 1200 })
+  assert.deepEqual(state.streamWordsBySpeaker.assistant.map(item => item.text), ['I', 'can', 'help', 'you'])
+
+  state = reduceFrame(state, { type: 'out_text', text: 'I can help you now', at: 1300 })
+  assert.deepEqual(state.streamWordsBySpeaker.assistant.map(item => item.text), ['I', 'can', 'help', 'you', 'now'])
+
+  state = reduceFrame(state, { type: 'out_text', text: 'heal', at: 1400 })
+  assert.deepEqual(state.streamWordsBySpeaker.assistant.map(item => item.text), ['I', 'can', 'help', 'you', 'now', 'heal'])
+})
+
+test('stream mode never stalls while cumulative text revises earlier words', () => {
+  let state = reduceFrame(initialState(), { type: 'display_mode', mode: 'stream' })
+  state = reduceFrame(state, { type: 'out_text', text: 'the cat and the dog', at: 1000 })
+  state = reduceFrame(state, { type: 'out_text', text: 'the cat or the dog', at: 1200 })
+  assert.deepEqual(state.streamWordsBySpeaker.assistant.map(item => item.text), ['the', 'cat', 'and', 'the', 'dog', 'or', 'the', 'dog'])
+
+  state = reduceFrame(state, { type: 'out_text', text: 'the cat', at: 1400 })
+  assert.deepEqual(state.streamWordsBySpeaker.assistant.map(item => item.text), ['cat', 'and', 'the', 'dog', 'or', 'the', 'dog', 'the', 'cat'])
+  assert.equal(state.streamSources.assistant, 'the cat')
+
+  state = reduceFrame(state, { type: 'out_text', text: 'the answer', at: 4000 })
+  assert.deepEqual(state.streamWordsBySpeaker.assistant.map(item => item.text), ['the', 'answer'])
 })
 
 test('stream mode retains only nine words and clears them at privacy boundaries', () => {
   let state = reduceFrame(initialState(), { type: 'display_mode', mode: 'stream' })
   state = reduceFrame(state, { type: 'in_text', text: 'one two three four five six seven eight nine ten eleven', at: 1000 })
-  assert.deepEqual(state.streamWords.map(item => item.text), ['three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven'])
+  assert.deepEqual(state.streamWordsBySpeaker.user.map(item => item.text), ['three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven'])
 
   state = reduceFrame(state, { type: 'reconnecting', attempt: 1 })
   assert.deepEqual(state.streamWords, [])
+  assert.deepEqual(state.streamWordsBySpeaker, { user: [], assistant: [] })
   assert.deepEqual(state.streamSources, { user: '', assistant: '' })
+  assert.equal(state.streamComplete, false)
+})
+
+test('completed turns mark Stream words to leave after speech stops', () => {
+  let state = reduceFrame(initialState(), { type: 'display_mode', mode: 'stream' })
+  state = reduceFrame(state, { type: 'out_text', text: 'The task is ready', at: 1000 })
+  assert.equal(state.streamComplete, false)
+
+  state = reduceFrame(state, { type: 'turn_complete' })
+  assert.equal(state.streamComplete, true)
+
+  state = reduceFrame(state, { type: 'in_text', text: 'What changed', at: 2000 })
+  assert.equal(state.streamComplete, false)
+})
+
+test('Stream completion state clears at every session privacy boundary', () => {
+  const completed = {
+    ...initialState(),
+    streamWords: [{ text: 'done', speaker: 'assistant', updatedAt: 1 }],
+    streamComplete: true
+  }
+  for (const frame of [
+    { type: 'lane_switching', id: '', name: 'One-off chat' },
+    { type: 'go_away' },
+    { type: 'error', detail: 'closed' }
+  ]) {
+    const next = reduceFrame(completed, frame)
+    assert.deepEqual(next.streamWords, [])
+    assert.equal(next.streamComplete, false)
+  }
 })
 
 test('display mode cycles orb to flow to stream and back to orb', () => {
