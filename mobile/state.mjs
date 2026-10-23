@@ -456,12 +456,20 @@ export function reduceFrame (state, frame) {
       }
     case 'task_snapshot': {
       const tasks = Array.isArray(frame.tasks) ? frame.tasks : []
+      const approvals = tasks
+        .filter(item => item.state === 'needs_input' && String(item.question || '').trim())
+        .map(item => ({ id: String(item.id || ''), question: String(item.question), sending: false }))
       return tasks.reduce((next, item) => {
         const id = String(item.id || '')
         if (!id) return next
         const records = updateTask(next, id, { state: String(item.state || 'working') }, item)
         return { ...next, tasks: records }
-      }, { ...state, tasks: [], pending: tasks.filter(item => ACTIVE_TASK_STATES.has(item.state)).map(item => String(item.id)) })
+      }, {
+        ...state,
+        tasks: [],
+        pending: tasks.filter(item => ACTIVE_TASK_STATES.has(item.state)).map(item => String(item.id)),
+        approvals
+      })
     }
     case 'task_started': {
       const id = String(frame.id || '')

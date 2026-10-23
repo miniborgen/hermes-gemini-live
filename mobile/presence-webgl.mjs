@@ -59,17 +59,29 @@ function mesh () {
   return new Float32Array(vertices)
 }
 
+function unavailableRenderer (canvas) {
+  if (canvas?.classList) canvas.classList.remove('ember-organism')
+  if (canvas) canvas.hidden = true
+  return { available: false, setLevel () {}, destroy () {} }
+}
+
 export function createPresenceRenderer (canvas, { reducedMotion = false } = {}) {
   const gl = canvas?.getContext?.('webgl', { alpha: true, antialias: true, premultipliedAlpha: true })
-  if (!gl) return { available: false, setLevel () {}, destroy () {} }
+  if (!gl) return unavailableRenderer(canvas)
   let stopped = false
   let level = 0
   let frame = 0
-  const program = gl.createProgram()
-  gl.attachShader(program, shader(gl, gl.VERTEX_SHADER, VERTEX))
-  gl.attachShader(program, shader(gl, gl.FRAGMENT_SHADER, FRAGMENT))
-  gl.linkProgram(program)
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program))
+  let program
+  try {
+    program = gl.createProgram()
+    gl.attachShader(program, shader(gl, gl.VERTEX_SHADER, VERTEX))
+    gl.attachShader(program, shader(gl, gl.FRAGMENT_SHADER, FRAGMENT))
+    gl.linkProgram(program)
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program))
+  } catch (error) {
+    if (program) gl.deleteProgram(program)
+    return unavailableRenderer(canvas)
+  }
   const data = mesh()
   const buffer = gl.createBuffer()
   gl.bindBuffer(gl.ARRAY_BUFFER, buffer)

@@ -149,7 +149,9 @@ class NoteQueue:
 
 async def _browser_to_live(browser: Any, live: LiveSession, note: dict,
                            book: agent_lane.RunBook | None = None,
-                           session_key: str | None = None, profile: str | None = None) -> None:
+                           session_key: str | None = None, profile: str | None = None,
+                           task_store: Any = None, conversation_key: str | None = None,
+                           lane_id: str = "one-off") -> None:
     while True:
         message = await browser.receive_text()
         if len(message) > MAX_BROWSER_FRAME_BYTES:
@@ -160,7 +162,9 @@ async def _browser_to_live(browser: Any, live: LiveSession, note: dict,
         elif kind == "text":
             await live.send_text(_text(message))
         elif kind == "approval" and book is not None:
-            await _user_approval(_loads(message), live, browser, book, session_key, profile)
+            await _user_approval(_loads(message), live, browser, book, session_key, profile,
+                                 task_store=task_store, conversation_key=conversation_key,
+                                 lane_id=lane_id)
         elif kind == "close":
             note["reason"] = "browser closed the call"
             return
@@ -214,7 +218,7 @@ async def _handle_tool_call(call: dict, live: LiveSession, browser: Any,
     lane_id = voice_lane.id if voice_lane is not None else "one-off"
     lane_name = voice_lane.name if voice_lane is not None else "One-off chat"
     started_at = time.time() * 1000
-    _persist_task(task_store, conversation_key, lane_id, {
+    await _persist_task_async(task_store, conversation_key, lane_id, {
         "id": call_id, "title": safe_prompt, "state": "working",
         "startedAt": started_at, "updatedAt": started_at,
         "laneId": lane_id, "laneName": _result_preview(lane_name, 64),
@@ -292,7 +296,9 @@ async def _update_task(call_id: str, args: dict, live: LiveSession, browser: Any
 
 async def _user_approval(value: dict, live: LiveSession, browser: Any,
                          book: agent_lane.RunBook, session_key: str | None,
-                         profile: str | None) -> None:
+                         profile: str | None, task_store: Any = None,
+                         conversation_key: str | None = None,
+                         lane_id: str = "one-off") -> None:
     """The user pressed Approve or Deny on the Desktop control.
 
     This is the only path that can approve a parked run: it arrives on the authenticated
@@ -315,6 +321,10 @@ async def _user_approval(value: dict, live: LiveSession, browser: Any,
                                        "detail": str(exc)[:200]}))
         return
     book.set_state(task, "running" if action == "approve" else "cancelled")
+    await _persist_task_async(task_store, conversation_key, lane_id, {
+        "id": task, "state": "working" if action == "approve" else "cancelled",
+        "updatedAt": time.time() * 1000, "question": "",
+    })
     await browser.send_text(_dump({"type": "task_update", "id": task, "action": action}))
     await live.send_text(f"The user pressed {action.capitalize()} on task #{task}. "
                          "Acknowledge it in a few words.")
@@ -412,6 +422,16 @@ def _persist_task(store: Any, conversation_key: str | None, lane_id: str, task: 
     if store is None or not conversation_key:
         return
     store.upsert(conversation_key, lane_id, task)
+
+
+async def _persist_task_async(store: Any, conversation_key: str | None,
+                              lane_id: str, task: dict) -> None:
+    if store is None or not conversation_key:
+        return
+    if callable(getattr(store, "upsert_async", None)):
+        await store.upsert_async(conversation_key, lane_id, task)
+        return
+    await asyncio.to_thread(store.upsert, conversation_key, lane_id, task)
 
 
 async def _release(notes: NoteQueue, task_id: str, why: str) -> None:
@@ -569,7 +589,10 @@ async def run_relay(browser: Any, session_key: str | None = None,
 
     book = continuity.book if continuity else agent_lane.RunBook()
     notes = NoteQueue(live, notes=continuity.notes if continuity else None)
-    up = asyncio.create_task(_browser_to_live(browser, live, note, book, session_key, profile))
+    lane_scope = voice_lane.id if voice_lane is not None else "one-off"
+    up = asyncio.create_task(_browser_to_live(
+        browser, live, note, book, session_key, profile,
+        task_store, conversation_key, lane_scope))
     down = asyncio.create_task(_live_to_browser(browser, live, note, book, session_key,
                                                 profile, notes, task_context, continuity,
                                                 continuity_key, generation, voice_lane, mirror,

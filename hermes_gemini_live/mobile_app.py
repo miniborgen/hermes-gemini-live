@@ -7,6 +7,7 @@ so the browser never receives a reusable application secret.
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import ipaddress
 import json
@@ -93,6 +94,9 @@ class TaskSnapshotStore:
         with self._lock, self._connect() as db:
             db.execute("INSERT OR REPLACE INTO task_snapshots(scope,lane_id,task_id,payload,updated_at) VALUES(?,?,?,?,?)",
                        (scope[:128], lane_id[:128], safe["id"], json.dumps(safe), time.time()))
+
+    def upsert_async(self, scope: str, lane_id: str, task: dict):
+        return asyncio.to_thread(self.upsert, scope, lane_id, task)
 
     def snapshot(self, scope: str, lane_id: str) -> list[dict]:
         with self._lock, self._connect() as db:

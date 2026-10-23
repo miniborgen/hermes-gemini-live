@@ -103,6 +103,15 @@ def test_webgl_presence_asset_is_served_and_cached():
     assert "createPresenceRenderer" in response.text
 
 
+def test_webgl_initialization_failure_keeps_the_css_presence_fallback():
+    renderer = (mobile_app._MOBILE_ROOT / "presence-webgl.mjs").read_text()
+    app = (mobile_app._MOBILE_ROOT / "app.js").read_text()
+    assert "function unavailableRenderer" in renderer
+    assert "catch (error)" in renderer
+    assert "canvas.classList.remove('ember-organism')" in renderer
+    assert "const presence = createPresenceRenderer" in app
+
+
 def test_radial_tasks_stop_under_reduced_motion_and_scale_for_small_screens():
     css = (mobile_app._MOBILE_ROOT / "styles.css").read_text()
     assert ".task-orbit-item" in css

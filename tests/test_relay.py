@@ -310,6 +310,30 @@ async def test_task_updates_are_persisted(opened, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_direct_user_approval_persists_the_resulting_task_state(opened, monkeypatch):
+    stored = []
+
+    class Store:
+        def upsert(self, scope, lane_id, task):
+            stored.append((scope, lane_id, task))
+
+    monkeypatch.setattr(relay.agent_lane, "approve", lambda *args, **kwargs: None)
+    live = opened(FakeLive(incoming=[]))
+    book = agent_lane.RunBook()
+    book.register("task-1", "Private task")
+    book.attach_run("task-1", "run-1")
+    book.set_state("task-1", "needs_input", question="Approve?", request_id="req-1")
+
+    await relay._user_approval(
+        {"id": "task-1", "choice": "approve"}, live, FakeBrowser([]), book, None, None,
+        task_store=Store(), conversation_key="browser-1", lane_id="one-off")
+
+    assert stored[0][0:2] == ("browser-1", "one-off")
+    assert stored[0][2]["state"] == "working"
+    assert stored[0][2]["question"] == ""
+
+
+@pytest.mark.asyncio
 async def test_selected_voice_lane_prewarms_gemini_and_shapes_delegated_work(opened, monkeypatch):
     started = []
 

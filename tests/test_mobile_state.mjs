@@ -21,6 +21,21 @@ test('task frames maintain a per-task approval queue and exact ids', () => {
   assert.deepEqual(state.pending, ['a'])
 })
 
+test('task snapshots restore actionable approvals for parked tasks', () => {
+  const state = reduceFrame(initialState(), {
+    type: 'task_snapshot',
+    tasks: [{
+      id: 'parked-1', title: 'Review proposed action', state: 'needs_input',
+      startedAt: 1000, updatedAt: 2000, laneId: 'personal-assistant',
+      laneName: 'Personal Assistant', question: 'Approve the proposed action?', preview: ''
+    }]
+  })
+  assert.deepEqual(state.pending, ['parked-1'])
+  assert.deepEqual(state.approvals, [{
+    id: 'parked-1', question: 'Approve the proposed action?', sending: false
+  }])
+})
+
 test('ready frames put session status in the unified status block', () => {
   const state = reduceFrame(initialState(), { type: 'ready', statusText: 'Conversation resumed' })
   assert.equal(state.session, 'live')
