@@ -25,7 +25,8 @@ def wire_model(model: str) -> str:
 def build_setup(*, model: str, voice: str, instructions: str,
                 thinking_level: str | None = None,
                 activity: dict | None = None,
-                tools: list[dict] | None = None) -> dict:
+                tools: list[dict] | None = None,
+                resumption_handle: str | None = None) -> dict:
     setup = {
         "model": wire_model(model),
         "generationConfig": {
@@ -35,7 +36,7 @@ def build_setup(*, model: str, voice: str, instructions: str,
         "systemInstruction": {"parts": [{"text": instructions}]},
         "inputAudioTranscription": {},
         "outputAudioTranscription": {},
-        "sessionResumption": {},
+        "sessionResumption": ({"handle": resumption_handle} if resumption_handle else {}),
         # Google owns the trim: it cuts at 80% of the context window toward half of
         # that, and never cuts the system instruction. Without it an audio-only session
         # hard-stops near 15 minutes.
@@ -101,13 +102,17 @@ def browser_frames(raw: dict) -> list[dict]:
                         "mime": inline.get("mimeType") or OUT_MIME})
         if text := (part.get("text") or "").strip():
             out.append({"type": "out_text", "text": text})
-    if content.get("turnComplete"):
-        out.append({"type": "turn_complete"})
-
-    for field, kind in (("inputTranscription", "in_text"), ("outputTranscription", "out_text")):
-        transcript = raw.get(field) or {}
+    for field, kind in (("interimInputTranscription", "in_text"),
+                        ("inputTranscription", "in_text"),
+                        ("outputTranscription", "out_text")):
+        transcript = content.get(field) or raw.get(field) or {}
         if text := (transcript.get("text") or ""):
             out.append({"type": kind, "text": text})
+
+    # A serverContent frame can carry final transcription and turnComplete together.
+    # The browser must receive the words first so it can commit that same exchange.
+    if content.get("turnComplete"):
+        out.append({"type": "turn_complete"})
 
     if tool_call := raw.get("toolCall"):
         out.append({"type": "tool_call",

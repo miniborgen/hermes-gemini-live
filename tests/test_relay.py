@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import pytest
 from starlette.websockets import WebSocketDisconnect
@@ -94,8 +95,11 @@ def opened(monkeypatch):
 
         class Stub:
             @staticmethod
-            async def open(tools=None):
+            async def open(tools=None, instructions=None, voice=None, resumption_handle=None):
                 seen["tools"] = tools
+                seen["instructions"] = instructions
+                seen["voice"] = voice
+                seen["resumption_handle"] = resumption_handle
                 return live
 
         monkeypatch.setattr(relay, "LiveSession", Stub)
@@ -116,15 +120,46 @@ async def test_mic_and_type_frames_reach_the_live_socket(opened):
     await relay.run_relay(browser)
     assert live.audio_in == ["AAA="]
     assert live.text_in == ["hello"]
+    assert browser.sent[0] == {"type": "ready", "resumed": False, "welcome": "new"}
     assert live.closed is True
+
+
+@pytest.mark.asyncio
+async def test_reconnect_without_a_provider_handle_is_honestly_new(opened):
+    relay.clear_continuity()
+    first = opened(FakeLive(end_after_script=False))
+    await relay.run_relay(FakeBrowser([{"type": "close"}]), continuity_key="lane-personal")
+    assert first.closed is True
+
+    second = opened(FakeLive(end_after_script=False))
+    browser = FakeBrowser([{"type": "close"}])
+    await relay.run_relay(browser, continuity_key="lane-personal")
+
+    assert browser.sent[0] == {"type": "ready", "resumed": False, "welcome": "new"}
+    assert second.closed is True
+
+
+@pytest.mark.asyncio
+async def test_first_connection_to_another_lane_is_new_even_in_the_same_browser_call(opened):
+    first = opened(FakeLive(end_after_script=False))
+    await relay.run_relay(FakeBrowser([{"type": "close"}]),
+                          continuity_key="browser-call:lane:personal-assistant")
+    assert first.closed is True
+
+    second = opened(FakeLive(end_after_script=False))
+    browser = FakeBrowser([{"type": "close"}])
+    await relay.run_relay(browser, continuity_key="browser-call:lane:garage-r129")
+
+    assert browser.sent[0] == {"type": "ready", "resumed": False, "welcome": "new"}
+    assert second.closed is True
 
 
 @pytest.mark.asyncio
 async def test_live_events_are_relabelled_for_the_renderer(opened, monkeypatch):
     # This test is about labelling, so the run itself must not reach the network.
     monkeypatch.setattr(relay.agent_lane, "start_task", lambda *a, **k: "task-x")
-    live = opened(FakeLive(incoming=[{"setupComplete": {}},
-                                     {"serverContent": {"interrupted": True}},
+    # LiveSession.open() consumes setupComplete before returning this peer to the relay.
+    live = opened(FakeLive(incoming=[{"serverContent": {"interrupted": True}},
                                      {"serverContent": {"turnComplete": True}},
                                      {"toolCall": {"functionCalls": [
                                          {"id": "c1", "name": "giao_viec_cho_hermes",
@@ -143,9 +178,8 @@ async def test_junk_and_blank_frames_never_reach_the_renderer(opened):
                               {"serverContent": {"modelTurn": {"parts": [{"text": "   "}]}}}]))
     browser = FakeBrowser([])
     await relay.run_relay(browser)
-    # The only frame the renderer sees is the socket dying after the script; nothing the
-    # server invented on its own gets forwarded as a message it cannot handle.
-    assert types(browser) == ["error"]
+    # Readiness is explicit; junk stays dropped before the scripted socket error.
+    assert types(browser) == ["ready", "error"]
 
 
 @pytest.mark.asyncio
@@ -165,7 +199,7 @@ async def test_a_refused_open_reports_why_and_leaves_no_session(monkeypatch):
 
     class Refusing:
         @staticmethod
-        async def open(tools=None):
+        async def open(tools=None, instructions=None):
             raise ConfigError("no Gemini key for Live: set GEMINI_LIVE_API_KEY or GEMINI_API_KEY")
 
     monkeypatch.setattr(relay, "LiveSession", Refusing)
@@ -182,7 +216,7 @@ async def test_a_server_goodbye_ends_the_call_as_its_own_reason(opened):
     live = opened(FakeLive(incoming=[{"goAway": {"timeLeft": "30s"}}]))
     browser = FakeBrowser([])
     await relay.run_relay(browser)
-    assert types(browser) == ["go_away"]
+    assert types(browser) == ["ready", "go_away"]
     assert live.closed is True
 
 
@@ -215,6 +249,185 @@ async def test_a_tool_call_answers_with_a_receipt_and_starts_no_wait(opened, mon
     assert task_id == "call_7"
     assert callable(on_needs_input)
     assert live.responses and live.responses[0]["result"].startswith("WORK_STARTED call_7")
+
+
+@pytest.mark.asyncio
+async def test_task_lifecycle_events_are_persisted_as_safe_structured_snapshots(opened, monkeypatch):
+    stored = []
+
+    class Store:
+        def upsert(self, scope, lane_id, task):
+            stored.append((scope, lane_id, task))
+
+    callbacks = {}
+
+    def fake_start_task(prompt, **kwargs):
+        callbacks.update(kwargs)
+        return "run-1"
+
+    monkeypatch.setattr(relay.agent_lane, "start_task", fake_start_task)
+    live = opened(FakeLive(incoming=[]))
+    browser = FakeBrowser([])
+    book = agent_lane.RunBook()
+    lane = type("Lane", (), {"id": "garage-r129", "name": "Garage /Users/private"})()
+
+    await relay._handle_tool_call(
+        {"id": "task-1", "name": "hermes_task", "args": {"task": "Read /Users/private/file"}},
+        live, browser, book, "scope", None, relay.NoteQueue(live), voice_lane=lane,
+        task_store=Store(), conversation_key="browser-1")
+    callbacks["on_needs_input"]("task-1", "Approve https://private.example", "req-1")
+    await asyncio.sleep(0.05)
+    callbacks["on_finished"]("task-1", "completed", "Done at /Users/private/result")
+    await asyncio.sleep(0.05)
+
+    assert [item[2]["state"] for item in stored] == ["working", "needs_input", "completed"]
+    assert all(item[0:2] == ("browser-1", "garage-r129") for item in stored)
+    assert "/Users/" not in stored[0][2]["title"]
+    assert "https://" not in stored[1][2]["question"]
+    assert "/Users/" not in stored[2][2]["preview"]
+
+
+@pytest.mark.asyncio
+async def test_task_updates_are_persisted(opened, monkeypatch):
+    stored = []
+
+    class Store:
+        def upsert(self, scope, lane_id, task):
+            stored.append((scope, lane_id, task))
+
+    monkeypatch.setattr(relay.agent_lane, "steer", lambda *args, **kwargs: None)
+    live = opened(FakeLive(incoming=[]))
+    book = agent_lane.RunBook()
+    book.register("task-1", "Private task")
+    book.attach_run("task-1", "run-1")
+    await relay._update_task(
+        "call-1", {"task": "task-1", "action": "steer", "answer": "continue"}, live,
+        FakeBrowser([]), book, None, None, task_store=Store(),
+        conversation_key="browser-1", lane_id="one-off")
+
+    assert stored[0][0:2] == ("browser-1", "one-off")
+    assert stored[0][2]["state"] == "working"
+
+
+@pytest.mark.asyncio
+async def test_direct_user_approval_persists_the_resulting_task_state(opened, monkeypatch):
+    stored = []
+
+    class Store:
+        def upsert(self, scope, lane_id, task):
+            stored.append((scope, lane_id, task))
+
+    monkeypatch.setattr(relay.agent_lane, "approve", lambda *args, **kwargs: None)
+    live = opened(FakeLive(incoming=[]))
+    book = agent_lane.RunBook()
+    book.register("task-1", "Private task")
+    book.attach_run("task-1", "run-1")
+    book.set_state("task-1", "needs_input", question="Approve?", request_id="req-1")
+
+    await relay._user_approval(
+        {"id": "task-1", "choice": "approve"}, live, FakeBrowser([]), book, None, None,
+        task_store=Store(), conversation_key="browser-1", lane_id="one-off")
+
+    assert stored[0][0:2] == ("browser-1", "one-off")
+    assert stored[0][2]["state"] == "working"
+    assert stored[0][2]["question"] == ""
+
+
+@pytest.mark.asyncio
+async def test_selected_voice_lane_prewarms_gemini_and_shapes_delegated_work(opened, monkeypatch):
+    started = []
+
+    class Lane:
+        id = "garage-r129"
+        name = "Garage — R129"
+        instructions = "Selected swim lane: Garage — R129. Known car: 1994 SL500."
+        task_context = "Voice lane Garage — R129; skill garage-r129-lane; canonical page r129.md."
+
+        @staticmethod
+        def session_key(base):
+            return "gemini-live:topic:68"
+
+    def fake_start_task(prompt, **kwargs):
+        started.append((prompt, kwargs["session_key"]))
+        return "task-1"
+
+    monkeypatch.setattr(relay.agent_lane, "start_task", fake_start_task)
+    live = opened(FakeLive(incoming=[
+        {"toolCall": {"functionCalls": [{"id": "lane-task", "name": "hermes_task",
+                                         "args": {"task": "What should I work on next?"}}]}}
+    ]))
+    browser = FakeBrowser([])
+
+    await relay.run_relay(browser, voice_lane=Lane())
+
+    assert opened.seen["instructions"] == Lane.instructions
+    assert started[0][1] == "gemini-live:topic:68"
+    assert started[0][0].startswith("Voice lane Garage — R129")
+    assert "What should I work on next?" in started[0][0]
+
+
+@pytest.mark.asyncio
+async def test_reconnect_reuses_live_handle_and_call_board(opened, monkeypatch):
+    relay.clear_continuity()
+    relay.remember_continuity(
+        "call-1", handle="resume-1", book=agent_lane.RunBook(), notes=["queued answer"],
+        expires_at=time.monotonic() + 60,
+    )
+    live = opened(FakeLive(incoming=[]))
+
+    await relay.run_relay(FakeBrowser([]), continuity_key="call-1", voice="Kore")
+
+    assert opened.seen["voice"] == "Kore"
+    assert opened.seen["resumption_handle"] == "resume-1"
+
+
+@pytest.mark.asyncio
+async def test_resumption_updates_are_kept_server_side_not_sent_to_browser(opened):
+    relay.clear_continuity()
+    live = opened(FakeLive(incoming=[{
+        "sessionResumptionUpdate": {"newHandle": "resume-2", "resumable": True}
+    }]))
+    browser = FakeBrowser([])
+
+    await relay.run_relay(browser, continuity_key="call-2")
+
+    assert "resumption" not in types(browser)
+    assert relay.continuity_snapshot("call-2")["handle"] == "resume-2"
+
+
+@pytest.mark.asyncio
+async def test_rejected_resume_handle_retries_once_as_a_fresh_live_session(monkeypatch):
+    relay.clear_continuity()
+    relay.remember_continuity("call-retry", handle="expired", expires_at=time.monotonic() + 60)
+    fresh = FakeLive(incoming=[])
+    attempts = []
+
+    class Stub:
+        @staticmethod
+        async def open(tools=None, instructions=None, resumption_handle=None, **kwargs):
+            attempts.append(resumption_handle)
+            if resumption_handle:
+                raise LiveError("invalid session resumption handle")
+            return fresh
+
+    monkeypatch.setattr(relay, "LiveSession", Stub)
+    monkeypatch.setattr(relay.agent_lane, "probe", lambda *a, **k: (agent_lane.STATUS_OK, ""))
+
+    await relay.run_relay(FakeBrowser([]), continuity_key="call-retry")
+
+    assert attempts == ["expired", None]
+    assert relay.continuity_snapshot("call-retry")["handle"] == ""
+
+
+def test_new_generation_retires_prior_owner_for_the_same_call():
+    relay.clear_continuity()
+    first = relay.claim_continuity("same-call")
+    first_generation = first.generation
+    second = relay.claim_continuity("same-call")
+
+    assert first_generation + 1 == second.generation
+    assert relay.is_current_owner("same-call", first_generation) is False
+    assert relay.is_current_owner("same-call", second.generation) is True
 
 
 @pytest.mark.asyncio
@@ -322,6 +535,44 @@ async def test_a_browser_that_navigates_away_ends_the_call_without_an_error(open
 
 
 @pytest.mark.asyncio
+async def test_voice_origin_task_events_are_mirrored_with_sanitized_previews(opened, monkeypatch):
+    class Mirror:
+        def enqueue_async(self, lane, event, **fields):
+            mirrored.append((event, fields))
+    mirrored = []
+    monkeypatch.setattr(relay.agent_lane, "start_task", lambda *args, **kwargs: "run-1")
+    lane = type("Lane", (), {"id": "garage-r129", "name": "Garage R129", "chat_id": "trusted", "thread_id": 1})()
+    live = opened(FakeLive(incoming=[]))
+    browser = FakeBrowser([])
+    book = agent_lane.RunBook()
+
+    await relay._handle_tool_call(
+        {"id": "task-1", "name": "giao_viec_cho_hermes", "args": {"task": "Find wheel fitment"}},
+        live, browser, book, "scope", None, relay.NoteQueue(live), voice_lane=lane,
+        mirror=Mirror())
+
+    assert mirrored == [("started", {"task_id": "task-1", "preview": "Find wheel fitment"})]
+
+
+@pytest.mark.asyncio
+async def test_finished_voice_task_mirrors_only_sanitized_result(monkeypatch):
+    class Mirror:
+        def enqueue_async(self, lane, event, **fields):
+            mirrored.append((event, fields))
+    mirrored = []
+    lane = type("Lane", (), {"id": "garage-r129", "name": "Garage R129", "chat_id": "trusted", "thread_id": 1})()
+    callback = relay._make_finisher(relay.NoteQueue(FakeLive(end_after_script=False)),
+                                    FakeBrowser([]), asyncio.get_running_loop(), voice_lane=lane,
+                                    mirror=Mirror())
+    callback("task-1", "completed", "Found it at /Users/private/secret.txt")
+    await asyncio.sleep(0.05)
+
+    assert mirrored[0][0] == "completed"
+    assert mirrored[0][1]["task_id"] == "task-1"
+    assert "/Users/" not in mirrored[0][1]["preview"]
+
+
+@pytest.mark.asyncio
 async def test_a_finished_run_crosses_back_onto_the_loop_as_a_spoken_note():
     # The worker thread must not touch sockets itself; it hands the loop a coroutine.
     live = FakeLive(end_after_script=False)
@@ -333,7 +584,35 @@ async def test_a_finished_run_crosses_back_onto_the_loop_as_a_spoken_note():
 
     assert any("Hermes finished task #task-9" in text and "4 files matched" in text
                for text in live.text_in)
-    assert {"type": "task_done", "id": "task-9", "state": "completed"} in browser.sent
+    assert {"type": "task_done", "id": "task-9", "state": "completed",
+            "preview": "4 files matched"} in browser.sent
+
+
+@pytest.mark.asyncio
+async def test_finished_run_sends_a_safe_useful_preview_for_background_notification():
+    live = FakeLive(end_after_script=False)
+    browser = FakeBrowser([])
+    finish = relay._make_finisher(relay.NoteQueue(live), browser, asyncio.get_running_loop())
+
+    finish("task-10", "completed", "The relay is healthy.\n/Users/private/secret.txt\n```raw```")
+    await asyncio.sleep(0.1)
+
+    frame = next(item for item in browser.sent if item["type"] == "task_done")
+    assert frame["preview"].startswith("The relay is healthy")
+    assert "/Users/" not in frame["preview"]
+    assert "```" not in frame["preview"]
+
+
+def test_notification_preview_redacts_inline_private_data():
+    preview = relay._result_preview(
+        "Found it at /Users/example/private.txt; email owner@example.com; "
+        "token=ghp_abcdefghijklmnopqrstuvwxyz123456; https://example.com/?secret=yes"
+    )
+
+    assert "/Users/" not in preview
+    assert "owner@example.com" not in preview
+    assert "ghp_" not in preview
+    assert "secret=yes" not in preview
 
 
 @pytest.mark.asyncio
@@ -350,7 +629,8 @@ async def test_a_result_that_lands_mid_sentence_waits_for_the_gap():
     await asyncio.sleep(0.05)
 
     assert live.text_in == [] and notes.waiting() == 1
-    assert {"type": "task_done", "id": "t1", "state": "completed"} in browser.sent
+    assert {"type": "task_done", "id": "t1", "state": "completed",
+            "preview": "4 files matched"} in browser.sent
 
     clock["now"] += relay.QUIET_BEFORE_NOTE_S + 0.1
     assert await notes.release_quietly() is True

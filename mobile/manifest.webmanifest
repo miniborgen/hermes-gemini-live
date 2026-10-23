@@ -1,0 +1,15 @@
+{
+  "name": "Mini Live",
+  "short_name": "Mini Live",
+  "description": "Private full-duplex voice with Mini task delegation.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#050403",
+  "theme_color": "#050403",
+  "icons": [
+    {"src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
+    {"src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
+  ]
+}

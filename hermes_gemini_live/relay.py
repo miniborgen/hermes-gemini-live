@@ -14,11 +14,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from collections import deque
+from dataclasses import dataclass, field
 from typing import Any
 
-from . import agent_lane, config, wire, tools as tools_module
+from . import agent_lane, config, telegram_mirror, wire, tools as tools_module
 from .config import ConfigError
 from .live_client import LiveError, LiveSession
 
@@ -47,6 +49,60 @@ NEEDS_NOTE = (
 #: result into the middle of its own speech makes it stop the sentence it was saying and read
 #: the report instead, which is what the user heard as being cut off.
 QUIET_BEFORE_NOTE_S = 1.0
+CONTINUITY_TTL_S = 300.0
+
+
+@dataclass
+class Continuity:
+    handle: str = ""
+    book: agent_lane.RunBook = field(default_factory=agent_lane.RunBook)
+    notes: list[str] = field(default_factory=list)
+    expires_at: float = 0.0
+    generation: int = 0
+
+
+_CONTINUITY: dict[str, Continuity] = {}
+
+
+def clear_continuity() -> None:
+    _CONTINUITY.clear()
+
+
+def remember_continuity(key: str, *, handle: str = "", book=None, notes=None,
+                        expires_at: float | None = None) -> Continuity:
+    entry = Continuity(
+        handle=handle, book=book or agent_lane.RunBook(), notes=list(notes or []),
+        expires_at=expires_at or (time.monotonic() + CONTINUITY_TTL_S),
+    )
+    _CONTINUITY[key] = entry
+    return entry
+
+
+def claim_continuity(key: str) -> Continuity:
+    entry = _continuity(key) or remember_continuity(key)
+    entry.generation += 1
+    entry.expires_at = time.monotonic() + CONTINUITY_TTL_S
+    return entry
+
+
+def is_current_owner(key: str | None, generation: int) -> bool:
+    entry = _continuity(key)
+    return bool(entry and entry.generation == generation)
+
+
+def _continuity(key: str | None) -> Continuity | None:
+    if not key:
+        return None
+    entry = _CONTINUITY.get(key)
+    if entry and entry.expires_at > time.monotonic():
+        return entry
+    _CONTINUITY.pop(key, None)
+    return None
+
+
+def continuity_snapshot(key: str) -> dict:
+    entry = _continuity(key)
+    return {"handle": entry.handle, "notes": list(entry.notes)} if entry else {}
 
 
 class NoteQueue:
@@ -57,12 +113,12 @@ class NoteQueue:
     an approval is urgent, because the run behind it is standing still.
     """
 
-    def __init__(self, live: LiveSession, clock=None) -> None:
+    def __init__(self, live: LiveSession, clock=None, notes=None) -> None:
         self._live = live
         # Injectable rather than patching ``time.monotonic``: that module is the event
         # loop's own clock, so a test that freezes it freezes asyncio with it.
         self._clock = clock or time.monotonic
-        self._notes: deque[str] = deque()
+        self._notes: deque[str] = deque(notes or [])
         self._spoken_at = 0.0
 
     def speaking(self) -> None:
@@ -74,6 +130,9 @@ class NoteQueue:
 
     def waiting(self) -> int:
         return len(self._notes)
+
+    def snapshot(self) -> list[str]:
+        return list(self._notes)
 
     async def release_quietly(self) -> bool:
         """Hand over one note if the model has stopped speaking. True when it did.
@@ -90,7 +149,9 @@ class NoteQueue:
 
 async def _browser_to_live(browser: Any, live: LiveSession, note: dict,
                            book: agent_lane.RunBook | None = None,
-                           session_key: str | None = None, profile: str | None = None) -> None:
+                           session_key: str | None = None, profile: str | None = None,
+                           task_store: Any = None, conversation_key: str | None = None,
+                           lane_id: str = "one-off") -> None:
     while True:
         message = await browser.receive_text()
         if len(message) > MAX_BROWSER_FRAME_BYTES:
@@ -101,7 +162,9 @@ async def _browser_to_live(browser: Any, live: LiveSession, note: dict,
         elif kind == "text":
             await live.send_text(_text(message))
         elif kind == "approval" and book is not None:
-            await _user_approval(_loads(message), live, browser, book, session_key, profile)
+            await _user_approval(_loads(message), live, browser, book, session_key, profile,
+                                 task_store=task_store, conversation_key=conversation_key,
+                                 lane_id=lane_id)
         elif kind == "close":
             note["reason"] = "browser closed the call"
             return
@@ -109,7 +172,10 @@ async def _browser_to_live(browser: Any, live: LiveSession, note: dict,
 
 async def _handle_tool_call(call: dict, live: LiveSession, browser: Any,
                             book: agent_lane.RunBook, session_key: str | None,
-                            profile: str | None, notes: NoteQueue) -> None:
+                            profile: str | None, notes: NoteQueue,
+                            task_context: str = "", voice_lane: Any = None,
+                            mirror: telegram_mirror.TelegramMirror | None = None,
+                            task_store: Any = None, conversation_key: str | None = None) -> None:
     """Receipt first, work in the pool. The only await here is a small local socket send.
 
     The rule is about not waiting on a *run* (seconds to minutes), not about never
@@ -125,7 +191,10 @@ async def _handle_tool_call(call: dict, live: LiveSession, browser: Any,
         await live.send_function_response(call_id, book.board(), name)
         return
     if name == tools_module.UPDATE_NAME:
-        await _update_task(call_id, args, live, browser, book, session_key, profile)
+        lane_id = voice_lane.id if voice_lane is not None else "one-off"
+        await _update_task(call_id, args, live, browser, book, session_key, profile,
+                           task_store=task_store, conversation_key=conversation_key,
+                           lane_id=lane_id)
         return
 
     task = tools_module.compose_prompt(args)
@@ -133,6 +202,8 @@ async def _handle_tool_call(call: dict, live: LiveSession, browser: Any,
         await live.send_function_response(call_id, "No task text was supplied.", name)
         return
 
+    if task_context:
+        task = f"{task_context}\n\nUser request from the voice call:\n{task}"
     loop = asyncio.get_running_loop()
     await live.send_function_response(
         call_id,
@@ -140,23 +211,42 @@ async def _handle_tool_call(call: dict, live: LiveSession, browser: Any,
         name)
     # The panel shows what the user asked for, not the shaping instruction appended for the
     # worker — otherwise every task row ends with a paragraph about voice output.
+    raw_prompt = str(args.get("task") or "").strip()
+    safe_prompt = _result_preview(raw_prompt, 200)
     await browser.send_text(_dump({"type": "task_started", "id": call_id,
-                                   "prompt": str(args.get("task") or "").strip()[:200]}))
+                                   "prompt": raw_prompt[:200]}))
+    lane_id = voice_lane.id if voice_lane is not None else "one-off"
+    lane_name = voice_lane.name if voice_lane is not None else "One-off chat"
+    started_at = time.time() * 1000
+    await _persist_task_async(task_store, conversation_key, lane_id, {
+        "id": call_id, "title": safe_prompt, "state": "working",
+        "startedAt": started_at, "updatedAt": started_at,
+        "laneId": lane_id, "laneName": _result_preview(lane_name, 64),
+        "question": "", "preview": "",
+    })
+    if voice_lane is not None and mirror is not None:
+        mirror.enqueue_async(voice_lane, "started", task_id=call_id,
+                             preview=_result_preview(str(args.get("task") or "")))
     agent_lane.start_task(
         task,
-        on_finished=_make_finisher(notes, browser, loop),
+        on_finished=_make_finisher(notes, browser, loop, voice_lane=voice_lane, mirror=mirror,
+                                   task_store=task_store, conversation_key=conversation_key,
+                                   started_at=started_at, title=safe_prompt),
         session_key=session_key,
         book=book,
         profile=profile,
         # One name per task: the id in this receipt is the id the model addresses later.
         task_id=call_id,
-        on_needs_input=_make_parker(notes, browser, loop),
+        on_needs_input=_make_parker(notes, browser, loop, voice_lane=voice_lane, mirror=mirror,
+                                    task_store=task_store, conversation_key=conversation_key,
+                                    started_at=started_at, title=safe_prompt),
     )
 
 
 async def _update_task(call_id: str, args: dict, live: LiveSession, browser: Any,
                        book: agent_lane.RunBook, session_key: str | None,
-                       profile: str | None) -> None:
+                       profile: str | None, task_store: Any = None,
+                       conversation_key: str | None = None, lane_id: str = "one-off") -> None:
     """Answer, redirect or abandon a task the model already started.
 
     These hit the api_server, so they go off-loop with ``to_thread``: the audio loop keeps
@@ -196,13 +286,19 @@ async def _update_task(call_id: str, args: dict, live: LiveSession, browser: Any
         return
 
     book.set_state(task, "running" if action == "steer" else "cancelled")
+    _persist_task(task_store, conversation_key, lane_id, {
+        "id": task, "state": "working" if action == "steer" else "cancelled",
+        "updatedAt": time.time() * 1000,
+    })
     await live.send_function_response(call_id, f"UPDATE_DONE {task} {action}.")
     await browser.send_text(_dump({"type": "task_update", "id": task, "action": action}))
 
 
 async def _user_approval(value: dict, live: LiveSession, browser: Any,
                          book: agent_lane.RunBook, session_key: str | None,
-                         profile: str | None) -> None:
+                         profile: str | None, task_store: Any = None,
+                         conversation_key: str | None = None,
+                         lane_id: str = "one-off") -> None:
     """The user pressed Approve or Deny on the Desktop control.
 
     This is the only path that can approve a parked run: it arrives on the authenticated
@@ -225,6 +321,10 @@ async def _user_approval(value: dict, live: LiveSession, browser: Any,
                                        "detail": str(exc)[:200]}))
         return
     book.set_state(task, "running" if action == "approve" else "cancelled")
+    await _persist_task_async(task_store, conversation_key, lane_id, {
+        "id": task, "state": "working" if action == "approve" else "cancelled",
+        "updatedAt": time.time() * 1000, "question": "",
+    })
     await browser.send_text(_dump({"type": "task_update", "id": task, "action": action}))
     await live.send_text(f"The user pressed {action.capitalize()} on task #{task}. "
                          "Acknowledge it in a few words.")
@@ -240,9 +340,24 @@ def _hand_off(coro, loop: asyncio.AbstractEventLoop, task_id: str, why: str) -> 
         logger.info("hermes-gemini-live: task %s %s after its call closed", task_id, why)
 
 
-def _make_parker(notes: NoteQueue, browser: Any, loop: asyncio.AbstractEventLoop):
+def _make_parker(notes: NoteQueue, browser: Any, loop: asyncio.AbstractEventLoop,
+                 voice_lane: Any = None,
+                 mirror: telegram_mirror.TelegramMirror | None = None,
+                 task_store: Any = None, conversation_key: str | None = None,
+                 started_at: float = 0, title: str = ""):
     """A worker-thread callback that queues the question a parked run is waiting on."""
     def on_needs_input(task_id: str, question: str, request_id: str) -> None:
+        if voice_lane is not None and mirror is not None:
+            mirror.enqueue_async(voice_lane, "needs_input", task_id=task_id,
+                                 preview=_result_preview(question))
+        lane_id = voice_lane.id if voice_lane is not None else "one-off"
+        lane_name = voice_lane.name if voice_lane is not None else "One-off chat"
+        _persist_task(task_store, conversation_key, lane_id, {
+            "id": task_id, "title": title, "state": "needs_input",
+            "startedAt": started_at, "updatedAt": time.time() * 1000,
+            "laneId": lane_id, "laneName": lane_name,
+            "question": _result_preview(question), "preview": "",
+        })
         async def deliver() -> None:
             notes.push(NEEDS_NOTE.format(task_id=task_id, question=question), urgent=True)
             await browser.send_text(_dump({"type": "task_needs_input", "id": task_id,
@@ -255,18 +370,68 @@ def _make_parker(notes: NoteQueue, browser: Any, loop: asyncio.AbstractEventLoop
 
 
 def _make_finisher(notes: NoteQueue, browser: Any,
-                   loop: asyncio.AbstractEventLoop):
+                   loop: asyncio.AbstractEventLoop, voice_lane: Any = None,
+                   mirror: telegram_mirror.TelegramMirror | None = None,
+                   task_store: Any = None, conversation_key: str | None = None,
+                   started_at: float = 0, title: str = ""):
     """A worker-thread callback that queues a finished result for the next gap in speech."""
     def on_finished(task_id: str, state: str, text: str) -> None:
+        preview = _result_preview(text)
+        if voice_lane is not None and mirror is not None:
+            mirror.enqueue_async(voice_lane, state, task_id=task_id, preview=preview)
+        lane_id = voice_lane.id if voice_lane is not None else "one-off"
+        lane_name = voice_lane.name if voice_lane is not None else "One-off chat"
+        _persist_task(task_store, conversation_key, lane_id, {
+            "id": task_id, "title": title, "state": state,
+            "startedAt": started_at, "updatedAt": time.time() * 1000,
+            "laneId": lane_id, "laneName": lane_name,
+            "question": "", "preview": preview,
+        })
         async def deliver() -> None:
             notes.push(RESULT_NOTE.format(task_id=task_id, state=state, text=text or "no output"))
             await browser.send_text(_dump({"type": "task_done", "id": task_id,
-                                           "state": state}))
+                                           "state": state,
+                                           "preview": preview}))
             await _release(notes, task_id, "finished")
 
         _hand_off(deliver(), loop, task_id, "finished")
 
     return on_finished
+
+
+def _result_preview(text: str, limit: int = 180) -> str:
+    value = str(text or "").replace("```", " ")
+    value = re.sub(r"(?:/Users/|~/)[^\s;,]+", "[private path]", value)
+    value = re.sub(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b", "[private email]", value)
+    value = re.sub(r"\b(?:gh[pousr]_|sk-|AIza)[A-Za-z0-9_-]{12,}\b", "[private token]", value)
+    value = re.sub(r"https?://\S+", "[private link]", value)
+    value = re.sub(r"\b(?:token|secret|password|api[_ -]?key)\s*[:=]\s*\S+", "[private value]", value, flags=re.I)
+    lines = []
+    for line in value.splitlines():
+        clean = " ".join(line.split()).strip()
+        if not clean or clean.startswith(("/Users/", "~/", "file://")):
+            continue
+        lines.append(clean)
+        if sum(len(item) for item in lines) >= limit:
+            break
+    preview = " ".join(lines).strip()
+    return preview[:limit].rstrip() or "The tiny librarians came back empty-handed."
+
+
+def _persist_task(store: Any, conversation_key: str | None, lane_id: str, task: dict) -> None:
+    if store is None or not conversation_key:
+        return
+    store.upsert(conversation_key, lane_id, task)
+
+
+async def _persist_task_async(store: Any, conversation_key: str | None,
+                              lane_id: str, task: dict) -> None:
+    if store is None or not conversation_key:
+        return
+    if callable(getattr(store, "upsert_async", None)):
+        await store.upsert_async(conversation_key, lane_id, task)
+        return
+    await asyncio.to_thread(store.upsert, conversation_key, lane_id, task)
 
 
 async def _release(notes: NoteQueue, task_id: str, why: str) -> None:
@@ -284,7 +449,12 @@ async def _release(notes: NoteQueue, task_id: str, why: str) -> None:
 
 async def _live_to_browser(browser: Any, live: LiveSession, note: dict,
                            book: agent_lane.RunBook, session_key: str | None,
-                           profile: str | None, notes: NoteQueue) -> None:
+                           profile: str | None, notes: NoteQueue,
+                           task_context: str = "", continuity: Continuity | None = None,
+                           continuity_key: str | None = None, generation: int = 0,
+                           voice_lane: Any = None,
+                           mirror: telegram_mirror.TelegramMirror | None = None,
+                           task_store: Any = None, conversation_key: str | None = None) -> None:
     while True:
         try:
             # The timeout is not a liveness check, it is the other half of the queue: a
@@ -295,6 +465,14 @@ async def _live_to_browser(browser: Any, live: LiveSession, note: dict,
             await notes.release_quietly()
             continue
         for frame in wire.browser_frames(raw):
+            if continuity_key and not is_current_owner(continuity_key, generation):
+                note["reason"] = "replaced by a newer connection"
+                return
+            if frame["type"] == "resumption":
+                if continuity is not None and frame.get("resumable") and frame.get("handle"):
+                    continuity.handle = frame["handle"]
+                    continuity.expires_at = time.monotonic() + CONTINUITY_TTL_S
+                continue
             if frame["type"] == "audio":
                 notes.speaking()
             await browser.send_text(_dump(frame))
@@ -307,7 +485,8 @@ async def _live_to_browser(browser: Any, live: LiveSession, note: dict,
             if frame["type"] == "tool_call":
                 for call in frame["calls"]:
                     await _handle_tool_call(call, live, browser, book, session_key,
-                                            profile, notes)
+                                            profile, notes, task_context, voice_lane, mirror,
+                                            task_store, conversation_key)
         await notes.release_quietly()
 
 
@@ -345,13 +524,22 @@ def _dump(frame: dict) -> str:
 
 
 async def run_relay(browser: Any, session_key: str | None = None,
-                     profile: str | None = None) -> None:
+                     profile: str | None = None, voice_lane: Any = None,
+                     continuity_key: str | None = None, voice: str | None = None,
+                     mirror: telegram_mirror.TelegramMirror | None = None,
+                     task_store: Any = None, conversation_key: str | None = None) -> None:
     """Own the whole call. The caller has already accepted the upgrade."""
     note: dict = {"reason": ""}
     # The serving home decides the profile, not a query parameter a client could send:
     # an unprefixed run resumes in the DEFAULT profile's store, so this is the one place
     # that must be right for delegated work to land in the right memory.
     profile = profile or config.serving_profile()
+    task_context = ""
+    lane_instructions = None
+    if voice_lane is not None:
+        session_key = voice_lane.session_key(session_key)
+        lane_instructions = voice_lane.instructions
+        task_context = voice_lane.task_context
     # Off the audio loop: a probe is a network round trip, and a slow gateway must not
     # cost the user a dropped syllable.
     lane_status, lane_detail = await asyncio.to_thread(agent_lane.probe, session_key, profile)
@@ -359,21 +547,56 @@ async def run_relay(browser: Any, session_key: str | None = None,
     if not offer_tools:
         logger.warning("hermes-gemini-live: agent lane unavailable (%s: %s)",
                        lane_status, lane_detail)
+    continuity = claim_continuity(continuity_key) if continuity_key else None
+    generation = continuity.generation if continuity else 0
+    resumed = bool(continuity and continuity.handle)
     try:
-        live = await LiveSession.open(tools_module.declarations() if offer_tools else None)
+        open_kwargs = {"instructions": lane_instructions}
+        if voice:
+            open_kwargs["voice"] = voice
+        if continuity and continuity.handle:
+            open_kwargs["resumption_handle"] = continuity.handle
+        try:
+            live = await LiveSession.open(
+                tools_module.declarations() if offer_tools else None, **open_kwargs)
+        except (LiveError, ConfigError):
+            if not (continuity and continuity.handle):
+                raise
+            continuity.handle = ""
+            open_kwargs.pop("resumption_handle", None)
+            live = await LiveSession.open(
+                tools_module.declarations() if offer_tools else None, **open_kwargs)
+            resumed = False
     except (LiveError, ConfigError) as exc:
         logger.warning("hermes-gemini-live: call refused: %s", exc)
         await browser.send_text(_dump({"type": "error", "detail": str(exc)}))
         return
+
+    # LiveSession.open() consumes Gemini's setupComplete acknowledgement. The browser
+    # needs an explicit readiness frame only after that handshake has really succeeded.
+    await browser.send_text(_dump({"type": "ready", "resumed": resumed,
+                                   "welcome": "resumed" if resumed else "new"}))
     if not offer_tools:
         await browser.send_text(_dump({"type": "lane", "status": lane_status,
                                        "detail": lane_detail}))
+    if voice_lane is not None:
+        await browser.send_text(_dump({"type": "lane_context", "id": voice_lane.id,
+                                       "name": voice_lane.name}))
+    if task_store is not None and conversation_key:
+        lane_scope = voice_lane.id if voice_lane is not None else "one-off"
+        snapshot = await asyncio.to_thread(task_store.snapshot, conversation_key, lane_scope)
+        await browser.send_text(_dump({"type": "task_snapshot", "tasks": snapshot}))
 
-    book = agent_lane.RunBook()
-    notes = NoteQueue(live)
-    up = asyncio.create_task(_browser_to_live(browser, live, note, book, session_key, profile))
+    book = continuity.book if continuity else agent_lane.RunBook()
+    notes = NoteQueue(live, notes=continuity.notes if continuity else None)
+    lane_scope = voice_lane.id if voice_lane is not None else "one-off"
+    up = asyncio.create_task(_browser_to_live(
+        browser, live, note, book, session_key, profile,
+        task_store, conversation_key, lane_scope))
     down = asyncio.create_task(_live_to_browser(browser, live, note, book, session_key,
-                                                profile, notes))
+                                                profile, notes, task_context, continuity,
+                                                continuity_key, generation, voice_lane, mirror,
+                                                task_store, conversation_key))
     try:
         done, pending = await asyncio.wait({up, down}, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
@@ -405,6 +628,9 @@ async def run_relay(browser: Any, session_key: str | None = None,
             if task.done() and not task.cancelled():
                 task.exception()
         await live.close()
+        if continuity is not None and is_current_owner(continuity_key, generation):
+            continuity.notes = notes.snapshot()
+            continuity.expires_at = time.monotonic() + CONTINUITY_TTL_S
         if notes.waiting():
             # Queued and never spoken: the result is real, the user simply hung up first.
             logger.info("hermes-gemini-live: call ended with %d result(s) still queued",

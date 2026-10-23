@@ -23,6 +23,17 @@ def test_setup_carries_the_google_owned_trim():
     assert setup["setup"]["contextWindowCompression"] == {"slidingWindow": {}}
     assert setup["setup"]["sessionResumption"] == {}
     assert setup["setup"]["model"] == "models/gemini-3.8-live"
+    assert setup["setup"]["inputAudioTranscription"] == {}
+    assert setup["setup"]["outputAudioTranscription"] == {}
+
+
+def test_setup_can_resume_a_live_session_handle():
+    setup = wire.build_setup(
+        model="gemini-3.8-live", voice="Aoede", instructions="continue",
+        resumption_handle="resume-123",
+    )
+
+    assert setup["setup"]["sessionResumption"] == {"handle": "resume-123"}
 
 
 def test_activity_lands_under_realtime_input_config_only_when_supplied():
@@ -81,6 +92,26 @@ def test_interruption_is_a_flush_signal_not_an_upstream_command():
 
 def test_turn_complete_closes_the_loop():
     assert types(wire.browser_frames({"serverContent": {"turnComplete": True}})) == ["turn_complete"]
+
+
+def test_input_and_output_transcriptions_reach_ephemeral_captions():
+    frames = wire.browser_frames({"serverContent": {
+        "inputTranscription": {"text": "check the garage"},
+        "outputTranscription": {"text": "I found three tasks"},
+    }})
+    assert frames == [
+        {"type": "in_text", "text": "check the garage"},
+        {"type": "out_text", "text": "I found three tasks"},
+    ]
+
+
+def test_transcription_precedes_turn_complete_when_they_share_a_server_frame():
+    frames = wire.browser_frames({"serverContent": {
+        "turnComplete": True,
+        "inputTranscription": {"text": "finish the shoulder routine"},
+        "outputTranscription": {"text": "I will save that completed exchange"},
+    }})
+    assert types(frames) == ["in_text", "out_text", "turn_complete"]
 
 
 def test_tool_call_survives_with_parsed_args():
