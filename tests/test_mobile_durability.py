@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from hermes_gemini_live import mobile_app, telegram_mirror
 
 
-LOGIN = "magnus.borg@gmail.com"
+LOGIN = "owner@example.com"
 HEADERS = {"Tailscale-User-Login": LOGIN}
 
 

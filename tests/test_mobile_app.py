@@ -7,7 +7,7 @@ from hermes_gemini_live import mobile_app
 from hermes_gemini_live.mobile_app import create_app
 
 
-LOGIN = "magnus.borg@gmail.com"
+LOGIN = "owner@example.com"
 HEADERS = {"Tailscale-User-Login": LOGIN}
 
 

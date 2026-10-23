@@ -73,7 +73,7 @@ test('radial task labels select active work before overflow and stay short', () 
     { id: 'done-2', title: 'A recent completed task', state: 'completed', startedAt: 9000, updatedAt: 10000 },
     { id: 'done-1', title: 'Another recent completed task', state: 'completed', startedAt: 8000, updatedAt: 9000 },
     { id: 'active-1', title: 'Schedule an event on the calendar tonight at 8:30 PM for the family', state: 'working', startedAt: 1000, updatedAt: 2000 },
-    { id: 'active-2', title: 'Check Magnus calendar history for the usual evening routine', state: 'needs_input', startedAt: 1000, updatedAt: 1500 }
+    { id: 'active-2', title: 'Check the owner calendar history for the usual evening routine', state: 'needs_input', startedAt: 1000, updatedAt: 1500 }
   ]
   const radial = radialTaskCards(tasks, { now: 11000 })
   assert.deepEqual(radial.map(task => task.id), ['active-1', 'active-2', 'done-2'])

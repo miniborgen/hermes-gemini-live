@@ -15,7 +15,7 @@ class Lane:
 def test_outbox_persists_unique_events_and_redacts_sensitive_preview(tmp_path):
     outbox = telegram_mirror.TelegramMirror(tmp_path / "mirror.sqlite3", sender=lambda payload: True)
 
-    assert outbox.enqueue(Lane(), "started", task_id="task-1", preview="token=secret /Users/magnus/private.txt") is True
+    assert outbox.enqueue(Lane(), "started", task_id="task-1", preview="token=secret /Users/example/private.txt") is True
     assert outbox.enqueue(Lane(), "started", task_id="task-1", preview="duplicate") is False
 
     rows = outbox.pending()
@@ -166,10 +166,10 @@ def test_stale_sending_claim_is_recovered_without_duplicate_live_delivery(tmp_pa
 
 def test_redaction_covers_bearer_auth_ipv4_and_windows_paths():
     value = telegram_mirror.sanitize_preview(
-        r"Authorization: Bearer abcdef1234567890 C:\\Users\\Magnus\\secret.txt 192.168.1.55"
+        r"Authorization: Bearer abcdef1234567890 C:\\Users\\Example\\secret.txt 192.168.1.55"
     )
     assert "abcdef" not in value
-    assert "Magnus" not in value
+    assert "Example" not in value
     assert "192.168" not in value
 
 

@@ -605,12 +605,12 @@ async def test_finished_run_sends_a_safe_useful_preview_for_background_notificat
 
 def test_notification_preview_redacts_inline_private_data():
     preview = relay._result_preview(
-        "Found it at /Users/magnus/private.txt; email magnus@example.com; "
+        "Found it at /Users/example/private.txt; email owner@example.com; "
         "token=ghp_abcdefghijklmnopqrstuvwxyz123456; https://example.com/?secret=yes"
     )
 
     assert "/Users/" not in preview
-    assert "magnus@example.com" not in preview
+    assert "owner@example.com" not in preview
     assert "ghp_" not in preview
     assert "secret=yes" not in preview
 

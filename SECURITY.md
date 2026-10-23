@@ -23,6 +23,13 @@ fix lands, email the maintainer through their GitHub profile instead.
   so the voice model can speak them.
 - **No telemetry.** No usage reporting, no analytics, no remote self-updates. The plugin only
   changes when you pull it.
+- **The mobile browser receives no server credentials or private lane source material.** The PWA
+  receives public shell assets, audio/transcription events, redacted task state, opaque lane ids,
+  and display names. Gemini and Hermes credentials, local task APIs, canonical file paths, chat ids,
+  topic ids, skill names, and assembled lane prompts remain server-side.
+- **The optional Telegram mirror is sanitized and at-least-once.** Paths, addresses, emails,
+  credentials, and links are removed from previews. A process crash after Telegram accepts a send
+  but before the local acknowledgement can duplicate an event.
 
 ## Known bounds
 
@@ -34,6 +41,9 @@ fix lands, email the maintainer through their GitHub profile instead.
   bare paths removed before the model reads it aloud.
 - A call is a metered, always-listening socket: leaving it open keeps streaming audio upstream.
   Mute stops the uplink; Stop ends the session.
+- The PWA is foreground-first. iOS can suspend microphone, Web Audio, wake locks, and WebSockets
+  while hidden or locked; the app can restore continuity after wake but cannot promise uninterrupted
+  locked-screen audio.
 
 ## Version support
 

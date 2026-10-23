@@ -1,10 +1,11 @@
 # hermes-gemini-live
 
-[![tests](https://github.com/skappafrost/hermes-gemini-live/actions/workflows/tests.yml/badge.svg)](https://github.com/skappafrost/hermes-gemini-live/actions/workflows/tests.yml)
+[![tests](https://github.com/miniborgen/hermes-gemini-live/actions/workflows/tests.yml/badge.svg?branch=feature%2Fios-pwa)](https://github.com/miniborgen/hermes-gemini-live/actions/workflows/tests.yml?query=branch%3Afeature%2Fios-pwa)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-Full-duplex **Gemini Live** voice inside [Hermes Agent](https://github.com/NousResearch/hermes-agent)'s
-Desktop app, with real work delegated to Hermes while you keep talking.
+Full-duplex **Gemini Live** voice for [Hermes Agent](https://github.com/NousResearch/hermes-agent),
+with a Desktop composer control and **Mini Live**, a private installable iPhone PWA. Real work is
+delegated to Hermes while you keep talking.
 
 Press the mic in the composer, speak, hear Gemini answer. Ask for something that needs files,
 a terminal, the web, or memory, and the voice model hands the job to Hermes over the api server,
@@ -30,6 +31,20 @@ Audio relays through Hermes' own backend, which holds the key.
 
 ## Install
 
+This fork's complete Mini Live work lives on the `feature/ios-pwa` branch. Clone that branch
+explicitly until it is merged into the fork's default branch:
+
+```bash
+cd ~/.hermes/plugins
+git clone --branch feature/ios-pwa --single-branch \
+  https://github.com/miniborgen/hermes-gemini-live.git
+cd ~/.hermes
+hermes plugins enable hermes-gemini-live
+```
+
+If you only want the upstream Desktop plugin, use the upstream install command below. The upstream
+repository does not yet contain all Mini Live features documented here.
+
 One command, into the Hermes home your shell points at:
 
 ```bash
@@ -46,7 +61,8 @@ into the home's `.env` for you. If you install by hand, add it yourself:
 echo 'GEMINI_API_KEY=your-key' >> ~/.hermes/.env
 ```
 
-Installing by hand works too, and is what you want if you plan to edit the plugin:
+Installing upstream by hand works too, and is what you want if you plan to edit only the upstream
+Desktop plugin:
 
 ```bash
 cd ~/.hermes/plugins && git clone https://github.com/skappafrost/hermes-gemini-live.git
@@ -113,34 +129,66 @@ PYTHONPATH="$PWD" python -m hermes_gemini_live.mobile_server \
 tailscale serve --bg --set-path=/live http://127.0.0.1:65183
 ```
 
+`--allowed-login` is required and must be the exact Tailscale identity allowed to use the app.
+The port is configurable; `65183` is only the default. For a persistent installation, run the
+same command under your own service manager and keep credentials in the serving Hermes profile's
+`.env`, never in the repository or browser assets. A minimal file is:
+
+```dotenv
+GEMINI_API_KEY=replace-with-your-google-ai-studio-key
+# Required only when delegated Hermes work is enabled:
+API_SERVER_KEY=replace-with-the-key-used-by-your-local-api-server
+```
+
+Before exposing the service, verify it locally:
+
+```bash
+curl --fail http://127.0.0.1:65183/health
+curl --fail http://127.0.0.1:65183/
+```
+
 Open `https://<your-tailnet-host>/live/` in iPhone Safari and choose **Add to Home Screen**. The
 server checks Tailscale's authenticated `Tailscale-User-Login` header against `--allowed-login` on
 every HTTP and WebSocket request. Direct loopback requests remain available for local testing.
 
 The PWA is deliberately foreground-first: iOS may suspend the microphone, Web Audio, or the socket
-when the app is backgrounded. Returning to the app shows **Tap to restore audio** when a user gesture
-is needed. A suspended or closed call does not resume its Gemini context or in-memory task board;
-already-submitted Hermes runs continue separately.
+when the app is backgrounded. Returning to the app shows **Tap to restore audio** when a user gesture is needed. The app first
+attempts Gemini session resumption after an ordinary sleep/wake disconnect. If the provider handle
+has expired, it restores a bounded, privacy-safe lane checkpoint rather than claiming exact session
+resumption. Already-submitted Hermes runs continue separately.
 
-A small centered pull-down hint opens a compact top drawer containing **Barge in**, **Sound**, the
-Orb/Highlights selector, and the swim-lane picker. With Barge in off, microphone uplink pauses while
+The small centered pull-down hint opens a compact top drawer containing **Barge in**, **Sound**,
+voice and notification controls, the **Orb → Flow → Stream** display cycle, and the swim-lane picker.
+With Barge in off, microphone uplink pauses while
 Gemini is speaking and tapping the orb or Highlights interrupts intentionally. With it on, the call
 remains fully duplex and works best with headphones or quiet rooms. Sound enables the brief
 connection, approval, failure, and ending cues and plays a preview when turned on. Preferences are
-remembered locally. The warm dark background uses slow ambient color drift and animated grain;
+remembered locally. The warm dark background uses slow ambient color drift, animated grain, and a WebGL presence with
+a CSS fallback;
 reduced-motion clients receive the same texture without continuous movement.
 
 The in-call **Captions** toggle renders Gemini Live's input and output transcription as two fading,
 speaker-labelled lines. Captions stay in page memory only, disappear after a few seconds, and are
 never stored by the service worker; the on/off preference is remembered locally. The small
-**Orb / Highlights** icon toggle can replace the orb with a six-item bottom-up stack of distilled
-conversation topics. Highlight phrases are derived locally once per completed exchange from a
+display button can replace the orb with a six-item Flow of distilled conversation topics or rapid
+two-lane Stream typography. Highlight phrases are derived locally once per completed exchange from a
 longer rolling window of the same ephemeral transcription rather than mirroring each partial phrase.
 They grow brighter toward the newest item, fade upward, and are cleared at call, lane-switch, and
-reconnect boundaries; only the selected display mode is stored. Unexpected socket
-closures retry three times with a bounded delay. Each successful retry opens a fresh Gemini voice
-session in the same selected conversation mode; browser task/approval indicators from the dead relay are cleared,
-while already-submitted Hermes work continues separately.
+reconnect boundaries; only the selected display mode is stored. Unexpected socket closures retry three times with a bounded delay and attempt genuine provider
+resumption before falling back to a fresh Gemini voice session. Browser task/approval indicators
+are reconciled with the durable task store, while already-submitted Hermes work continues separately.
+
+### Optional integrations
+
+Mini Live is useful without Telegram topics or a personal knowledge base: leave the lane picker on
+**One-off chat** and no lane context is sent. Swim lanes are discovered from the serving Hermes
+profile's existing `telegram.extra.group_topics` configuration; the repository contains no chat ids,
+topic ids, usernames, private paths, or assembled lane prompts. If a mapped lane is available, the
+server may build a bounded brief from that lane's bound skill and explicitly canonical pages.
+
+Task mirroring to Telegram is also server-side and optional. It is at-least-once delivery: a crash
+after Telegram accepts a message but before local acknowledgement can produce a duplicate. Sanitized
+previews redact paths, addresses, email addresses, credentials, and links before enqueueing.
 
 ### Topic swim lanes
 
@@ -190,6 +238,9 @@ same home's `.env`.
 | `GEMINI_LIVE_API_SERVER_PROFILE` | derived from the serving home | Pin which profile delegated runs belong to |
 | `GEMINI_LIVE_SESSION_KEY` | unset | Stable memory scope for delegated runs |
 | `GEMINI_LIVE_INSTRUCTIONS` | — | Extra persona sentences appended to the system instruction |
+| mobile server `--host` | `127.0.0.1` | Bind address; keep loopback when publishing through a private reverse proxy |
+| mobile server `--port` | `65183` | Local PWA port; choose any unused port |
+| mobile server `--allowed-login` | required | Exact `Tailscale-User-Login` identity accepted for non-loopback HTTP and WebSocket requests |
 
 ## Troubleshooting
 
@@ -328,7 +379,8 @@ hermes_gemini_live/
   relay.py                   # browser socket ⇄ Live socket, receipt-first tool handling
 dashboard/plugin_api.py      # GET /status, WS /relay — mounted at /api/plugins/<name>/
 desktop/plugin.js            # the composer control (uncompiled ESM, no JSX)
-tests/                       # 86 tests, no network
+mobile/                      # Mini Live PWA shell, state reducer, audio worklet, WebGL presence
+tests/                       # Python and Node tests; no external network required
 ```
 
 Two rules that are easy to break by accident:
@@ -340,11 +392,16 @@ Two rules that are easy to break by accident:
   against a scripted Live peer, and each test ends through exactly one pump so no assertion
   depends on which task the loop finished first.
 
-Run them with any Python that has `pytest`, `pytest-asyncio`, `httpx`, `starlette` and `fastapi`:
+Run them with any Python that has `pytest`, `pytest-asyncio`, `httpx`, `starlette`, `fastapi`, and
+`websockets`:
 
 ```bash
-python -m pytest -q   # 86 passed here; 2 of them need a Hermes checkout on PYTHONPATH
-                      # and skip cleanly without one, which is what CI sees
+python -m pytest -q
+node --test tests/test_mobile_state.mjs tests/test_mobile_browser.mjs
+node --check desktop/plugin.js
+node --check mobile/app.js
+node --check mobile/sw.js
+node --check mobile/audio-worklet.js
 ```
 
 The renderer path — a real microphone, a real speaker, real interruptions — is only provable by
