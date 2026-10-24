@@ -538,6 +538,39 @@ export function reduceFrame (state, frame) {
   }
 }
 
+export function presentationState (state) {
+  let presence = 'listening'
+  if (state.session === 'idle' || state.session === 'boot' || state.session === 'ended') presence = 'idle'
+  else if (state.session === 'reconnecting') presence = 'reconnecting'
+  else if (state.session === 'error') presence = 'error'
+  else if (state.voice === 'user') presence = 'user_speaking'
+  else if (state.voice === 'thinking') presence = 'thinking'
+  else if (state.voice === 'assistant') presence = 'mini_speaking'
+
+  const count = state.pending.length
+  const work = state.approvals.length
+    ? { kind: 'approval', count: state.approvals.length, copy: `${state.approvals.length} task${state.approvals.length === 1 ? '' : 's'} waiting for you` }
+    : count
+      ? { kind: 'active', count, copy: `Working on ${count} task${count === 1 ? '' : 's'} for you` }
+      : { kind: 'none', count: 0, copy: '' }
+
+  const conversationalState = count && !state.approvals.length ? { ...state, pending: [] } : state
+  const callAvailable = ['starting', 'live', 'reconnecting'].includes(state.session)
+  return {
+    presence,
+    work,
+    caption: state.captionsEnabled && state.captions.length
+      ? { kind: 'visible', lines: state.captions }
+      : { kind: 'hidden', lines: [] },
+    controlAvailability: {
+      start: ['idle', 'error', 'ended'].includes(state.session),
+      call: callAvailable,
+      approval: state.approvals.length > 0
+    },
+    status: visibleStatus(conversationalState)
+  }
+}
+
 export function visibleStatus (state) {
   if (state.approvals.length) return { label: 'Approval needed', detail: `${state.approvals.length} task${state.approvals.length === 1 ? '' : 's'} waiting for you` }
   if (state.session === 'boot') return { label: 'Preparing', detail: 'Checking the private voice relay…' }

@@ -1,4 +1,4 @@
-import { feedbackCue, hasScheduledPlayback, initialState, isCurrentConnection, laneVisualToken, naturalSpeechGate, nextDisplayMode, radialTaskCards, reconnectDelay, reduceFrame, shouldConnectAfterLaneSwitch, shouldTransmitMic, taskCards, visibleStatus, workingLine } from './state.mjs'
+import { feedbackCue, hasScheduledPlayback, initialState, isCurrentConnection, laneVisualToken, naturalSpeechGate, nextDisplayMode, presentationState, radialTaskCards, reconnectDelay, reduceFrame, shouldConnectAfterLaneSwitch, shouldTransmitMic, taskCards } from './state.mjs'
 import { createPresenceRenderer } from './presence-webgl.mjs'
 
 const SEND_RATE = 16000
@@ -187,28 +187,29 @@ function setText (element, value) {
 }
 
 function render () {
-  const status = visibleStatus(state)
+  const presentation = presentationState(state)
+  const status = presentation.status
   elements.app.dataset.session = state.session
-  elements.app.dataset.voice = state.voice
+  elements.app.dataset.voice = presentation.presence
   elements.app.dataset.muted = String(state.muted)
   elements.app.dataset.duplex = state.duplexMode
   elements.app.dataset.display = state.displayMode
-  elements.app.dataset.working = String(state.pending.length > 0)
+  elements.app.dataset.working = String(presentation.work.kind === 'active')
   elements.app.dataset.streamComplete = String(state.streamComplete)
   const laneToken = laneVisualToken(state.activeLane || state.selectedLane)
   elements.app.style.setProperty('--lane-hue', String(laneToken.hue))
   elements.app.style.setProperty('--lane-motion', String(laneToken.motion))
-  setText(elements.statusLabel, state.pending.length ? workingLine(Math.floor(Date.now() / 4200)) : status.label)
+  setText(elements.statusLabel, status.label)
   setText(elements.statusDetail, status.detail || state.detail || '')
-  elements.topWorkingStatus.hidden = state.pending.length === 0
-  setText(elements.topWorkingText, state.pending.length === 1 ? 'Working on one task for you' : `Working on ${state.pending.length} tasks for you`)
-  elements.app.style.setProperty('--task-count', String(Math.min(4, state.pending.length)))
+  elements.topWorkingStatus.hidden = presentation.work.kind !== 'active'
+  setText(elements.topWorkingText, presentation.work.copy)
+  elements.app.style.setProperty('--task-count', String(Math.min(4, presentation.work.count)))
   setText(elements.currentLane, state.laneName || 'One-off chat')
   setText(elements.topLane, state.laneName || 'One-off chat')
-  elements.startButton.disabled = !['idle', 'error', 'ended'].includes(state.session)
+  elements.startButton.disabled = !presentation.controlAvailability.start
   elements.startButton.textContent = state.session === 'error' || state.session === 'ended' ? 'Start again' : 'Start voice'
-  elements.startPanel.hidden = !['idle', 'error', 'ended'].includes(state.session)
-  elements.controls.hidden = !['starting', 'live', 'reconnecting'].includes(state.session)
+  elements.startPanel.hidden = !presentation.controlAvailability.start
+  elements.controls.hidden = !presentation.controlAvailability.call
   elements.mute.setAttribute('aria-pressed', String(state.micMuted))
   elements.mute.querySelector('span:last-child').textContent = state.micMuted ? 'Mic on' : 'Mic mute'
   elements.mute.querySelector('.control-icon').textContent = state.micMuted ? '○' : '◉'
@@ -237,8 +238,8 @@ function render () {
   setText(elements.bargeState, state.duplexMode === 'natural' ? 'Barging' : 'Stable')
   setText(elements.soundState, state.soundCues ? 'Sound on' : 'Muted')
   elements.captions.hidden = state.displayMode !== 'orb'
-  const captions = state.captionsEnabled ? state.captions : []
-  const showCaptions = captions.length > 0
+  const captions = presentation.caption.lines
+  const showCaptions = presentation.caption.kind === 'visible'
   elements.liveCaption.hidden = !showCaptions
   const captionKey = showCaptions
     ? JSON.stringify(captions.map((caption) => [caption.speaker, caption.text, caption.updatedAt]))
@@ -348,8 +349,8 @@ function render () {
   elements.taskMore.textContent = tasksExpanded ? 'Show less' : `+${cards.more} more`
 
   const approval = state.approvals[0]
-  elements.approvalSheet.hidden = !approval
-  if (approval) {
+  elements.approvalSheet.hidden = !presentation.controlAvailability.approval
+  if (presentation.controlAvailability.approval && approval) {
     elements.approvalQuestion.textContent = approval.question
     elements.approvalCount.textContent = state.approvals.length > 1
       ? `Approval 1 of ${state.approvals.length}`

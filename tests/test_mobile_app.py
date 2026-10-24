@@ -120,7 +120,7 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert "Hey, I’m back." in app_script
     assert "Hey, what can we do?" in app_script
     assert "frame.statusText = frame.welcome === 'resumed' ? 'Conversation resumed' : 'Session ready'" in app_script
-    assert "const showCaptions = captions.length > 0" in app_script
+    assert "const showCaptions = presentation.caption.kind === 'visible'" in app_script
     assert "caption.speaker === 'user' ? 'You' : 'Mini'" in app_script
     assert "elements.captions.querySelector('span:last-child').textContent = 'Captions'" in app_script
     assert "Captions on" not in app_script
@@ -227,8 +227,17 @@ def test_root_serves_the_installable_mobile_call_surface():
     assert "item.setAttribute('role', 'listitem')" in app
     assert "elements.highlightStack.setAttribute('tabindex', state.highlights.length ? '-1' : '0')" in app
     assert "setText(elements.topElapsed" in app
-    assert "elements.topWorkingStatus.hidden = state.pending.length === 0" in app
-    assert "'Working on one task for you'" in app
+    assert "const presentation = presentationState(state)" in app
+    assert "elements.app.dataset.voice = presentation.presence" in app
+    assert "const captions = presentation.caption.lines" in app
+    assert "const showCaptions = presentation.caption.kind === 'visible'" in app
+    assert "elements.approvalSheet.hidden = !presentation.controlAvailability.approval" in app
+    assert "setText(elements.statusLabel, status.label)" in app
+    assert "elements.topWorkingStatus.hidden = presentation.work.kind !== 'active'" in app
+    assert "setText(elements.topWorkingText, presentation.work.copy)" in app
+    assert "state.captionsEnabled ? state.captions : []" not in app
+    assert "elements.approvalSheet.hidden = !approval" not in app
+    assert "presentation.work.kind === 'active' ? workingLine" not in app
     assert "setText(elements.topLane" in app
     assert "setText(elements.bargeState, state.duplexMode === 'natural' ? 'Barging' : 'Stable')" in app
     assert "setText(elements.soundState, state.soundCues ? 'Sound on' : 'Muted')" in app

@@ -1,7 +1,46 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { conversationHighlight, feedbackCue, hasScheduledPlayback, initialState, isCurrentConnection, laneVisualToken, naturalSpeechGate, nextDisplayMode, radialTaskCards, reconnectDelay, reduceFrame, shouldConnectAfterLaneSwitch, shouldTransmitMic, taskCards, taskTitle, visibleStatus, workingLine } from '../mobile/state.mjs'
+import { conversationHighlight, feedbackCue, hasScheduledPlayback, initialState, isCurrentConnection, laneVisualToken, naturalSpeechGate, nextDisplayMode, presentationState, radialTaskCards, reconnectDelay, reduceFrame, shouldConnectAfterLaneSwitch, shouldTransmitMic, taskCards, taskTitle, visibleStatus, workingLine } from '../mobile/state.mjs'
+
+test('presentation state separates delegated work from conversational thinking', () => {
+  const view = presentationState({
+    ...initialState(),
+    session: 'live',
+    voice: 'thinking',
+    pending: ['task-1', 'task-2']
+  })
+
+  assert.equal(view.presence, 'thinking')
+  assert.deepEqual(view.work, { kind: 'active', count: 2, copy: 'Working on 2 tasks for you' })
+  assert.equal(view.status.label, 'Thinking')
+  assert.equal(view.status.detail, '')
+})
+
+test('presentation state normalizes approval captions and control availability', () => {
+  const view = presentationState({
+    ...initialState(),
+    session: 'live',
+    captionsEnabled: true,
+    captions: [{ speaker: 'assistant', text: 'Ready when you are', updatedAt: 10 }],
+    approvals: [{ id: 'task-1', question: 'Proceed?', sending: false }],
+    pending: ['task-1']
+  })
+
+  assert.deepEqual(view.work, { kind: 'approval', count: 1, copy: '1 task waiting for you' })
+  assert.deepEqual(view.caption, { kind: 'visible', lines: [{ speaker: 'assistant', text: 'Ready when you are', updatedAt: 10 }] })
+  assert.deepEqual(view.controlAvailability, { start: false, call: true, approval: true })
+})
+
+test('presentation state exposes approvals outside an active call', () => {
+  const view = presentationState({
+    ...initialState(),
+    session: 'ended',
+    approvals: [{ id: 'task-1', question: 'Proceed?', sending: false }]
+  })
+
+  assert.deepEqual(view.controlAvailability, { start: true, call: false, approval: true })
+})
 
 test('task frames maintain a per-task approval queue and exact ids', () => {
   let state = initialState()
