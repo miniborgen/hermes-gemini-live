@@ -917,6 +917,21 @@ async function restoreAudio () {
   }
 }
 
+async function registerServiceWorker () {
+  if (!('serviceWorker' in navigator)) return
+  let refreshingForWorker = false
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (refreshingForWorker) return
+    refreshingForWorker = true
+    pendingWorkerRefresh = true
+    applyPendingWorkerRefresh()
+  })
+  try {
+    const registration = await navigator.serviceWorker.register('./sw.js', { scope: './', updateViaCache: 'none' })
+    void registration.update().catch(() => {})
+  } catch {}
+}
+
 async function boot () {
   try {
     const [statusResponse, lanesResponse] = await Promise.all([
@@ -966,18 +981,7 @@ async function boot () {
     state = { ...initialState(), session: 'error', detail: error?.message || String(error) }
   }
   render()
-  if ('serviceWorker' in navigator) {
-    let refreshingForWorker = false
-    navigator.serviceWorker.addEventListener('controllerchange', () => {
-      if (refreshingForWorker) return
-      refreshingForWorker = true
-      pendingWorkerRefresh = true
-      applyPendingWorkerRefresh()
-    })
-    navigator.serviceWorker.register('./sw.js', { scope: './', updateViaCache: 'none' })
-      .then((registration) => registration.update())
-      .catch(() => {})
-  }
+  void registerServiceWorker()
 }
 
 elements.startButton.addEventListener('click', startCall)

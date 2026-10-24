@@ -112,6 +112,14 @@ def test_webgl_initialization_failure_keeps_the_css_presence_fallback():
     assert "const presence = createPresenceRenderer" in app
 
 
+def test_browser_boot_is_not_blocked_by_service_worker_registration_or_updates():
+    app = (mobile_app._MOBILE_ROOT / "app.js").read_text()
+    boot = app[app.index("async function boot ()"):app.index("elements.startButton.addEventListener")]
+    assert "void registerServiceWorker()" in boot
+    assert "await registerServiceWorker()" not in boot
+    assert "registration.update()" not in boot
+
+
 def test_service_worker_uses_network_first_for_the_navigation_shell():
     sw = (mobile_app._MOBILE_ROOT / "sw.js").read_text()
     assert "request.mode === 'navigate'" in sw
