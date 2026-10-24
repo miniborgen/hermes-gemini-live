@@ -311,6 +311,45 @@ def _useful_markdown(text: str, limit: int = MAX_SOURCE_CHARS) -> str:
     return value[:limit]
 
 
+def _lane_behavior_profile(name: str, skill: str) -> dict[str, str]:
+    """Return conservative voice behavior directives from trusted lane identity."""
+    identity = f"{name} {skill}".lower()
+    if any(token in identity for token in ("garage", "operator", "ops", "pilot")):
+        return {
+            "archetype": "operator",
+            "initiative": "suggestive",
+            "delegation_style": "evidence-first",
+            "voice_style": "concise and operational",
+        }
+    if any(token in identity for token in ("research", "valuation", "sourcing")):
+        return {
+            "archetype": "researcher",
+            "initiative": "suggestive",
+            "delegation_style": "evidence-first",
+            "voice_style": "concise and exploratory",
+        }
+    if any(token in identity for token in ("personal assistant", "family", "calendar", "appointment")):
+        return {
+            "archetype": "personal_assistant",
+            "initiative": "proactive-with-confirmation",
+            "delegation_style": "action-first",
+            "voice_style": "concise and helpful",
+        }
+    return {
+        "archetype": "mixed",
+        "initiative": "reactive",
+        "delegation_style": "clarify-first",
+        "voice_style": "concise and exploratory",
+    }
+
+
+def _behavior_section(name: str, skill: str) -> str:
+    profile = _lane_behavior_profile(name, skill)
+    return "Lane behavior profile:\n" + "\n".join(
+        f"- {key}: {value}" for key, value in profile.items()
+    )
+
+
 @dataclass(frozen=True)
 class VoiceLane:
     id: str
@@ -354,7 +393,12 @@ def resolve_lane(lane_id: str | None) -> VoiceLane | None:
         "the next conversational opening."
     )
     skill_section = _voice_brief(skill_text, MAX_SKILL_CHARS)
-    fixed = "\n\n".join([preamble, f"Lane voice brief:\n{skill_section}"])
+    behavior_section = _behavior_section(row["name"], row["skill"])
+    fixed = "\n\n".join([
+        preamble,
+        behavior_section,
+        f"Lane voice brief:\n{skill_section}",
+    ])
     remaining = max(0, MAX_INSTRUCTIONS_CHARS - len(fixed) - 2)
     per_source = min(MAX_SOURCE_CHARS, remaining // max(1, len(sources)))
     source_sections: list[str] = []

@@ -74,10 +74,36 @@ def test_lanes_follow_telegram_topic_bindings_and_build_a_bounded_voice_brief(tm
     assert "clearly speaking Swedish" in lane.instructions
     assert "explicitly asks" in lane.instructions
     assert "continue the conversation naturally" in lane.instructions
+    assert "Lane behavior profile:" in lane.instructions
+    assert "archetype: operator" in lane.instructions
+    assert "initiative: suggestive" in lane.instructions
+    assert "delegation_style: evidence-first" in lane.instructions
+    assert "voice_style: concise and operational" in lane.instructions
     assert len(lane.instructions) < 16000
     assert lane.session_key(None) == "gemini-live:chat:-1001:topic:68"
     assert lane.session_key("voice") == "voice:chat:-1001:topic:68"
     assert "garage-r129-lane" in lane.task_context
+
+
+def test_personal_assistant_lane_gets_proactive_confirming_behavior(tmp_path, monkeypatch):
+    home = _home(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    config = home / "config.yaml"
+    config.write_text(config.read_text().replace(
+        "name: Garage — R129\n            thread_id: 68\n            skill: garage-r129-lane",
+        "name: Personal Assistant\n            thread_id: 68\n            skill: personal-assistant-lane",
+    ))
+    garage_skill = home / "skills" / "garage-r129-lane"
+    assistant_skill = home / "skills" / "personal-assistant-lane"
+    garage_skill.rename(assistant_skill)
+
+    lane = lanes.resolve_lane("personal-assistant")
+
+    assert lane is not None
+    assert "archetype: personal_assistant" in lane.instructions
+    assert "initiative: proactive-with-confirmation" in lane.instructions
+    assert "delegation_style: action-first" in lane.instructions
 
 
 def test_unknown_or_unbound_lanes_are_rejected(tmp_path, monkeypatch):
